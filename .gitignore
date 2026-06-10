@@ -1,0 +1,10 @@
+# Data folders — PDFs, Excel files, zips (not pushed to repo)
+Brokerage Structure & Formats for the month of April to June 2026/
+RE_ Brokerage Structure & Formats for the month of April to June 2026/
+*.zip
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.env
