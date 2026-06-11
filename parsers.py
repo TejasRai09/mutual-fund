@@ -309,11 +309,26 @@ def parse_bandhan(data: bytes, pwd: str = '') -> dict:
     result = {}
     lines = txt.split('\n')
 
-    # April format: every scheme row contains the keyword "ALL" (single-rate column)
-    # May format: 4 distinct numeric columns (T1/T2/T3/T4+) — no "ALL" keyword
-    all_count = sum(1 for l in lines if re.search(r'\bALL\b', l))
+    # Category words shared across all three Bandhan formats
+    _CAT = sorted([
+        'Sectoral/Thematic Funds', 'Flexi Cap Fund', 'Focused Fund', 'ELSS',
+        'Large & Mid Cap Fund', 'Large Cap Fund', 'Mid Cap Fund', 'Multi Cap Fund',
+        'Small Cap Fund', 'Aggressive Hybrid Fund', 'Arbitrage Fund',
+        'Balanced Advantage Fund', 'Conservative Hybrid Fund', 'Equity Savings Fund',
+        'Multi Asset Allocation Fund', 'Multi Asset Allocation',
+        'Low Duration Fund', 'Money Market Fund', 'Ultra Short Duration Fund',
+        'Banking and PSU Fund', 'Corporate Bond Fund', 'Credit Risk Fund',
+        'Dynamic Bond Fund', 'Floater Fund', 'Gilt Fund', 'Long Duration Fund',
+        'Medium Duration Fund', 'Medium to Long Duration Fund', 'Short Duration Fund',
+        'Liquid Fund', 'Overnight Fund', 'Index Fund', 'Fund of Fund',
+        'Domestic Fund', 'Retirement Fund', 'Value Fund/Contra Fund', 'Value Fund',
+    ], key=len, reverse=True)  # longest first so "Value Fund/Contra Fund" strips before "Value Fund"
+
+    all_count    = sum(1 for l in lines if re.search(r'\bALL\b', l))
+    may_4val     = sum(1 for l in lines if 'Bandhan' in l and len(get_floats(l)) >= 4)
+
     if all_count >= 3:
-        # April format
+        # ── April format: "Bandhan Scheme Name ... ALL T1 T2 T3 T4 ..."
         for line in lines:
             line = line.strip()
             m_all = re.search(r'\bALL\b', line)
@@ -324,30 +339,40 @@ def parse_bandhan(data: bytes, pwd: str = '') -> dict:
                 if name and len(name) > 5:
                     v = nums[0]
                     result[name] = (v, v, v, v)
-    else:
-        # May format
-        category_words = {
-            'Sectoral/Thematic Funds', 'Flexi Cap Fund', 'Focused Fund', 'ELSS',
-            'Large & Mid Cap Fund', 'Large Cap Fund', 'Mid Cap Fund', 'Multi Cap Fund',
-            'Small Cap Fund', 'Aggressive Hybrid Fund', 'Arbitrage Fund',
-            'Balanced Advantage Fund', 'Conservative Hybrid Fund', 'Equity Savings Fund',
-            'Multi Asset Allocation Fund', 'Low Duration Fund', 'Money Market Fund',
-            'Ultra Short Duration Fund', 'Banking and PSU Fund', 'Corporate Bond Fund',
-            'Credit Risk Fund', 'Dynamic Bond Fund', 'Floater Fund', 'Gilt Fund',
-            'Long Duration Fund', 'Medium Duration Fund', 'Medium to Long Duration Fund',
-            'Short Duration Fund', 'Liquid Fund', 'Overnight Fund', 'Index Fund',
-            'Fund of Fund', 'Domestic Fund', 'Retirement Fund',
-        }
+
+    elif may_4val >= 5:
+        # ── May format: "Bandhan Scheme Category T1 T2 T3 T4" (4 distinct columns)
         for line in lines:
             line = line.strip()
             nums = get_floats(line)
             if len(nums) >= 4:
                 name = line
-                for cw in category_words:
+                for cw in _CAT:
                     name = name.replace(cw, '').strip()
                 name = re.sub(r'[\d.%\s]+$', '', name).strip()
                 if name and len(name) > 5:
                     result[name] = (nums[0], nums[1], nums[2], nums[3])
+
+    else:
+        # ── Jan-Mar format: "Bandhan Scheme Fund CategoryWord 1.25%" or "...1.20%1.05%"
+        # Strip trailing values first, then strip category word from the end of what remains.
+        for line in lines:
+            line = line.strip()
+            if not line.startswith('Bandhan'): continue
+            nums = get_floats(line)
+            if not nums: continue
+            name = re.sub(r'[\d.%\s]+$', '', line).strip()
+            for cw in _CAT:
+                if name.endswith(cw):
+                    name = name[:-len(cw)].strip()
+                    break
+            if not name or len(name) <= 5: continue
+            if len(nums) >= 2:
+                result[name] = (nums[0], nums[0], nums[0], nums[1])
+            else:
+                v = nums[0]
+                result[name] = (v, v, v, v)
+
     return result
 
 
@@ -452,18 +477,23 @@ def parse_hsbc(data: bytes, pwd: str = '') -> dict:
     txt = read_pdf(data, pwd)
     result = {}
     lines = txt.split('\n')
+    # Merge split lines: handles both "HSBC Scheme\n1.25 1.25 ..." (Apr-Jun)
+    # and "1.25 1.25 HSBC Scheme 1.15 ..." (Jan-Mar) formats.
     merged, i = [], 0
     while i < len(lines):
         line = lines[i].strip()
-        if line.startswith('HSBC') and not get_floats(line) and i + 1 < len(lines):
+        hi = line.find('HSBC')
+        if hi >= 0 and not get_floats(line[hi:]) and i + 1 < len(lines):
             merged.append(line + ' ' + lines[i+1].strip()); i += 2
         else:
             merged.append(line); i += 1
     for line in merged:
-        if not line.startswith('HSBC'): continue
-        nums = get_floats(line)
+        if 'HSBC' not in line: continue
+        hi = line.find('HSBC')
+        part = line[hi:]          # everything from "HSBC" onward; discards pre-name values
+        nums = get_floats(part)
         if len(nums) >= 2:
-            name = re.sub(r'[\d.%\s]+$', '', line).strip()
+            name = re.sub(r'[\d.%\s]+$', '', part).strip()
             if not name or len(name) < 4: continue
             result[name] = (nums[0], nums[0], nums[0], nums[1])
     return result
@@ -476,11 +506,13 @@ def parse_invesco(data: bytes, pwd: str = '') -> dict:
         line = line.strip()
         if 'Invesco' not in line: continue
         nums = get_floats(line)
-        if len(nums) >= 4:
+        # Apr-Jun: 4 columns (T1, T2, T3, T4+);  Jan-Mar: 3 columns (T1, T2&T3, T4+)
+        if len(nums) >= 3:
             idx = line.find('Invesco')
             part = line[idx:]
             name = re.sub(r'[\d.\s]+$', '', part).strip()
-            result[name] = (nums[0], nums[0], nums[0], nums[3])
+            if not name: continue
+            result[name] = (nums[0], nums[0], nums[0], nums[-1])
     return result
 
 
