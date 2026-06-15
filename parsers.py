@@ -15,7 +15,28 @@ def read_pdf(data: bytes, pwd: str = '') -> str:
     return '\n'.join(p.extract_text() or '' for p in r.pages)
 
 def read_excel_wb(data: bytes):
-    return openpyxl.load_workbook(BytesIO(data))
+    """Load an xlsx workbook, stripping broken dataValidations if needed."""
+    try:
+        return openpyxl.load_workbook(BytesIO(data))
+    except TypeError:
+        # Some xlsx files (e.g. vijayinfotech) have malformed dataValidation
+        # sqref values that crash openpyxl. Strip those elements and retry.
+        import zipfile as _zf
+        zin = _zf.ZipFile(BytesIO(data))
+        buf = BytesIO()
+        with _zf.ZipFile(buf, 'w', _zf.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                content = zin.read(item.filename)
+                if (item.filename.startswith('xl/worksheets/')
+                        and item.filename.endswith('.xml')):
+                    # Strip dataValidations (may use x: namespace prefix)
+                    content = re.sub(
+                        rb'<(?:x:)?dataValidations\b[^>]*>.*?</(?:x:)?dataValidations>',
+                        b'', content, flags=re.DOTALL,
+                    )
+                zout.writestr(item, content)
+        buf.seek(0)
+        return openpyxl.load_workbook(buf)
 
 # ── Number helpers ─────────────────────────────────────────────────────────────
 
@@ -55,35 +76,61 @@ def norm(s: str) -> str:
 
 # ── Fuzzy scheme matching ──────────────────────────────────────────────────────
 
+def _strip_word(text, word):
+    return re.sub(r'\s+', ' ', re.sub(rf'\b{word}\b\s*', '', text)).strip()
+
+# Per-data-dict index cache (avoids re-computing norm() on source keys)
+_match_idx_cache: dict = {}
+
+def _get_match_idx(data: dict) -> dict:
+    """Return (or build) a pre-normalized index for `data`."""
+    did = id(data)
+    if did not in _match_idx_cache:
+        pairs_norm = [(k, norm(k), v) for k, v in data.items()]
+        _match_idx_cache[did] = {
+            'data':    data,
+            'lower':   {k.lower(): v for k, v in data.items()},
+            'norm':    {kn: v for _, kn, v in pairs_norm},
+            'pairs':   [(kn, v) for _, kn, v in pairs_norm],
+            'strip': {
+                sw: [(_strip_word(kn, sw), v) for _, kn, v in pairs_norm]
+                for sw in ('india', 'mf', 'elss')
+            },
+            'words':   [(frozenset(kn.split()), v) for _, kn, v in pairs_norm],
+        }
+    return _match_idx_cache[did]
+
 def best_match(name, data):
+    # O(1) exact lookups first
     if name in data: return data[name]
     nl = name.lower()
-    for k, v in data.items():
-        if k.lower() == nl: return v
+    idx = _get_match_idx(data)
+    if nl in idx['lower']: return idx['lower'][nl]
     nn = norm(name)
-    for k, v in data.items():
-        if norm(k) == nn: return v
-    for k, v in data.items():
-        kn = norm(k)
+    if nn in idx['norm']: return idx['norm'][nn]
+
+    # O(n) partial match using pre-computed norms
+    for kn, v in idx['pairs']:
         if nn in kn or kn in nn: return v
-    def _strip(text, word):
-        return re.sub(r'\s+', ' ', re.sub(rf'\b{word}\b\s*', '', text)).strip()
-    for strip_word in ('india', 'mf', 'elss'):
-        nn_s = _strip(nn, strip_word)
-        for k, v in data.items():
-            kn_s = _strip(norm(k), strip_word)
+
+    # Strip words and try again
+    for sw in ('india', 'mf', 'elss'):
+        nn_s = _strip_word(nn, sw)
+        for kn_s, v in idx['strip'][sw]:
             if nn_s == kn_s or nn_s in kn_s or kn_s in nn_s: return v
-            if strip_word == 'elss':
+            if sw == 'elss':
                 nw, kw = set(nn_s.split()), set(kn_s.split())
                 if len(nw) >= 3 and len(kw) >= 3:
-                    if nw.issubset(kw) and len(kw)-len(nw) <= 2: return v
-                    if kw.issubset(nw) and len(nw)-len(kw) <= 2: return v
-    nw = set(nn.split())
-    for k, v in data.items():
-        kw = set(norm(k).split())
+                    if nw.issubset(kw) and len(kw) - len(nw) <= 2: return v
+                    if kw.issubset(nw) and len(nw) - len(kw) <= 2: return v
+
+    # Word-subset match
+    nw = frozenset(nn.split())
+    for kw, v in idx['words']:
         if len(nw) >= 3 and len(kw) >= 3:
-            if nw.issubset(kw) and len(kw)-len(nw) <= 2: return v
-            if kw.issubset(nw) and len(nw)-len(kw) <= 2: return v
+            if nw <= kw and len(kw) - len(nw) <= 2: return v
+            if kw <= nw and len(nw) - len(kw) <= 2: return v
+
     return None
 
 # ── Excel filler ──────────────────────────────────────────────────────────────
@@ -113,6 +160,82 @@ def fill_workbook(wb, data: dict):
         else:
             not_found.append(str(scheme))
     return filled, not_found
+
+# ── Vijayinfotech row-based format ────────────────────────────────────────────
+
+_VIJAY_TRAIL_IDX = {
+    'FIRST YEAR TRAIL':    0,
+    'SECOND YEAR TRAIL':   1,
+    'THIRD YEAR TRAIL':    2,
+    'FOURTH YEAR TRAIL':   3,
+    'LONGTERM YEAR TRAIL': 3,
+}
+
+def detect_format(wb) -> str:
+    """Return 'vijay' if vijayinfotech row-based format, else 'redos'."""
+    ws = wb.active
+    headers = set()
+    for c in range(1, min((ws.max_column or 0) + 1, 25)):
+        v = ws.cell(1, c).value
+        if v:
+            headers.add(str(v))
+    return 'vijay' if ('BrokerageName' in headers or 'T15' in headers) else 'redos'
+
+def fill_workbook_vijay(wb, data: dict):
+    """Fill vijayinfotech row-based xlsx in-place.
+    One row per (scheme × trail-year); columns T15 and B15 are filled.
+    Returns (filled_scheme_list, blank_scheme_list).
+    """
+    ws = wb.active
+    hdr = {}
+    for c in range(1, (ws.max_column or 0) + 1):
+        v = ws.cell(1, c).value
+        if v:
+            hdr[str(v)] = c
+
+    sc = hdr.get('Schemename', 6)       # scheme name
+    jc = hdr.get('BrokerageName', 10)   # e.g. "FIRST YEAR TRAIL"
+    nc = hdr.get('T15', 14)             # column to fill
+    oc = hdr.get('B15', 15)             # column to fill
+
+    # Pass 1 (read-only, fast): collect rows needing updates & build match cache
+    cache = {}
+    to_write = []   # (row_num, fill_value, scheme_name)
+
+    for row_num, row in enumerate(
+        ws.iter_rows(min_row=2, values_only=True), start=2
+    ):
+        scheme = row[sc - 1]
+        bname  = row[jc - 1]
+        if not scheme or not bname:
+            continue
+
+        bname_u = str(bname).upper()
+        trail_idx = _VIJAY_TRAIL_IDX.get(bname_u)
+        if trail_idx is None:
+            continue    # CLAWBACK, UPFRONT, flat rows, etc.
+
+        s = str(scheme).strip()
+        if s not in cache:
+            cache[s] = best_match(s, data)
+
+        match = cache[s]
+        if match is None:
+            continue
+
+        vals = match if isinstance(match, tuple) else (match,) * 4
+        if trail_idx < len(vals) and vals[trail_idx] is not None:
+            to_write.append((row_num, round(float(vals[trail_idx]), 4), s))
+
+    # Pass 2 (write-only, small): update T15 and B15 for matched rows
+    filled_set: set = set()
+    for row_num, val, s in to_write:
+        ws.cell(row_num, nc).value = val
+        ws.cell(row_num, oc).value = val
+        filled_set.add(s)
+
+    blank_set = {s for s, m in cache.items() if m is None} - filled_set
+    return list(filled_set), list(blank_set)
 
 # ── AMC detection ──────────────────────────────────────────────────────────────
 

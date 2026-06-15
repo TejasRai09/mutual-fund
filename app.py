@@ -5,7 +5,8 @@ Run:  streamlit run app.py
 import streamlit as st
 import openpyxl, zipfile, io, traceback
 from parsers import (
-    detect_source_amc, detect_target_amc, get_parser, fill_workbook, read_excel_wb
+    detect_source_amc, detect_target_amc, get_parser,
+    fill_workbook, fill_workbook_vijay, detect_format, read_excel_wb,
 )
 
 st.set_page_config(
@@ -37,6 +38,16 @@ DSP · Franklin · HDFC · HSBC · Invesco
 ICICI Pru · LIC · Mahindra · Mirae · Motilal
 Nippon · PGIM · SBI · Sundaram · TATA · Trust
 """)
+    st.divider()
+    vendor_fmt = st.radio(
+        "Target file vendor format",
+        ["Auto-detect", "Redos (column-based)", "Vijayinfotech (row-based)"],
+        help=(
+            "Redos: one row per scheme, trail values in separate columns.\n"
+            "Vijayinfotech: one row per (scheme × trail year), fills T15 & B15 columns.\n"
+            "Auto-detect identifies the format from the file header."
+        ),
+    )
     st.divider()
     st.caption("Values filled are EX-GST trail commissions.")
 
@@ -139,11 +150,13 @@ if st.button("🚀 Process & Fill", type="primary", use_container_width=True):
     filled_files: list[tuple[str, bytes]] = []   # [(filename, xlsx_bytes)]
     target_log = []
 
+    # Pre-merge all source dicts for vijayinfotech (covers all AMCs in one file)
+    merged_source: dict = {}
+    for _amc, _d in source_data.items():
+        if isinstance(_d, list): continue   # skip hdfc_raw accumulator
+        merged_source.update(_d)
+
     for i, f in enumerate(tgt_uploads):
-        progress.progress(
-            (len(src_uploads) + i + 1) / (len(src_uploads) + len(tgt_uploads)),
-            text=f"Filling: {f.name}",
-        )
         raw = f.read()
         try:
             wb = read_excel_wb(raw)
@@ -151,30 +164,66 @@ if st.button("🚀 Process & Fill", type="primary", use_container_width=True):
             target_log.append(('❌', f.name, '–', '–', f'Cannot open: {e}'))
             continue
 
-        amc = detect_target_amc(wb)
-        if amc is None:
-            target_log.append(('⚠️', f.name, '–', '–', 'AMC not recognised – skipped'))
-            continue
+        # Determine vendor format
+        if vendor_fmt == "Vijayinfotech (row-based)":
+            fmt = 'vijay'
+        elif vendor_fmt == "Redos (column-based)":
+            fmt = 'redos'
+        else:
+            fmt = detect_format(wb)
 
-        data = source_data.get(amc)
-        if data is None:
-            target_log.append(('⚠️', f.name, amc.upper(), '–',
-                                'No source file uploaded for this AMC'))
-            continue
+        progress.progress(
+            (len(src_uploads) + i + 1) / (len(src_uploads) + len(tgt_uploads)),
+            text=(
+                f"Filling Vijayinfotech (large file — please wait…): {f.name}"
+                if fmt == 'vijay' else f"Filling: {f.name}"
+            ),
+        )
 
-        try:
-            filled, not_found = fill_workbook(wb, data)
-            buf = io.BytesIO()
-            wb.save(buf)
-            filled_files.append((f.name, buf.getvalue()))
-            nf_str = ', '.join(not_found[:5]) + ('…' if len(not_found) > 5 else '')
-            target_log.append((
-                '✅', f.name, amc.upper(),
-                f'{len(filled)}/{len(filled)+len(not_found)}',
-                f'{len(not_found)} blank: {nf_str}' if not_found else 'All matched',
-            ))
-        except Exception as e:
-            target_log.append(('❌', f.name, amc.upper(), '–', traceback.format_exc(limit=2)))
+        if fmt == 'vijay':
+            if not merged_source:
+                target_log.append(('⚠️', f.name, 'ALL', '–', 'No source files uploaded'))
+                continue
+            try:
+                filled, not_found = fill_workbook_vijay(wb, merged_source)
+                buf = io.BytesIO()
+                wb.save(buf)
+                filled_files.append((f.name, buf.getvalue()))
+                total = len(filled) + len(not_found)
+                target_log.append((
+                    '✅', f.name, 'Vijayinfotech',
+                    f'{len(filled)}/{total} schemes',
+                    f'{len(not_found)} not matched' if not_found else 'All schemes matched',
+                ))
+            except Exception as e:
+                target_log.append(('❌', f.name, 'Vijayinfotech', '–', traceback.format_exc(limit=2)))
+
+        else:
+            # Redos: per-AMC matching
+            amc = detect_target_amc(wb)
+            if amc is None:
+                target_log.append(('⚠️', f.name, '–', '–', 'AMC not recognised – skipped'))
+                continue
+
+            data = source_data.get(amc)
+            if data is None:
+                target_log.append(('⚠️', f.name, amc.upper(), '–',
+                                    'No source file uploaded for this AMC'))
+                continue
+
+            try:
+                filled, not_found = fill_workbook(wb, data)
+                buf = io.BytesIO()
+                wb.save(buf)
+                filled_files.append((f.name, buf.getvalue()))
+                nf_str = ', '.join(not_found[:5]) + ('…' if len(not_found) > 5 else '')
+                target_log.append((
+                    '✅', f.name, amc.upper(),
+                    f'{len(filled)}/{len(filled)+len(not_found)}',
+                    f'{len(not_found)} blank: {nf_str}' if not_found else 'All matched',
+                ))
+            except Exception as e:
+                target_log.append(('❌', f.name, amc.upper(), '–', traceback.format_exc(limit=2)))
 
     progress.empty()
 
@@ -188,13 +237,13 @@ if st.button("🚀 Process & Fill", type="primary", use_container_width=True):
 
     # Target fill summary
     st.subheader("Results")
-    cols = st.columns([0.05, 0.30, 0.10, 0.10, 0.45])
+    cols = st.columns([0.05, 0.30, 0.12, 0.13, 0.40])
     cols[0].markdown("**#**"); cols[1].markdown("**File**")
-    cols[2].markdown("**AMC**"); cols[3].markdown("**Filled**"); cols[4].markdown("**Notes**")
+    cols[2].markdown("**Format/AMC**"); cols[3].markdown("**Filled**"); cols[4].markdown("**Notes**")
     st.markdown("<hr style='margin:4px 0'>", unsafe_allow_html=True)
 
     for idx, (icon, fname, amc, filled_str, notes) in enumerate(target_log, 1):
-        c = st.columns([0.05, 0.30, 0.10, 0.10, 0.45])
+        c = st.columns([0.05, 0.30, 0.12, 0.13, 0.40])
         c[0].write(f"{icon}")
         c[1].write(fname)
         c[2].write(amc)
