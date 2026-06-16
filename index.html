@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BrokerageAI — Mutual Fund Filler</title>
+<style>
+/* ─── Reset ──────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:16px;-webkit-font-smoothing:antialiased}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,
+              'Helvetica Neue',Arial,sans-serif;
+  background:#f1f5f9;
+  color:#1e293b;
+  min-height:100vh;
+}
+
+/* ─── Tokens ─────────────────────────────────────────────── */
+:root{
+  --blue:       #2563eb;
+  --blue-h:     #1d4ed8;
+  --blue-lite:  #eff6ff;
+  --blue-ring:  rgba(37,99,235,.25);
+  --slate-50:   #f8fafc;
+  --slate-100:  #f1f5f9;
+  --slate-200:  #e2e8f0;
+  --slate-300:  #cbd5e1;
+  --slate-400:  #94a3b8;
+  --slate-500:  #64748b;
+  --slate-600:  #475569;
+  --slate-700:  #334155;
+  --slate-800:  #1e293b;
+  --slate-900:  #0f172a;
+  --green:      #16a34a;
+  --green-bg:   #f0fdf4;
+  --green-bdr:  #bbf7d0;
+  --amber:      #b45309;
+  --amber-bg:   #fffbeb;
+  --amber-bdr:  #fde68a;
+  --red:        #dc2626;
+  --red-bg:     #fff1f2;
+  --red-bdr:    #fecdd3;
+  --white:      #ffffff;
+  --shadow-xs:  0 1px 2px rgba(0,0,0,.05);
+  --shadow-sm:  0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.05);
+  --shadow:     0 4px 6px -1px rgba(0,0,0,.08),0 2px 4px -2px rgba(0,0,0,.05);
+  --shadow-md:  0 10px 15px -3px rgba(0,0,0,.08),0 4px 6px -4px rgba(0,0,0,.05);
+  --r-sm:4px;--r:8px;--r-md:12px;--r-lg:16px;--r-xl:20px;
+}
+
+/* ─── Layout ─────────────────────────────────────────────── */
+.page{max-width:1040px;margin:0 auto;padding:0 24px 64px}
+
+/* ─── Nav ────────────────────────────────────────────────── */
+nav{
+  background:var(--white);
+  border-bottom:1px solid var(--slate-200);
+  position:sticky;top:0;z-index:100;
+  box-shadow:var(--shadow-xs);
+}
+.nav-inner{
+  max-width:1040px;margin:0 auto;padding:0 24px;
+  height:60px;display:flex;align-items:center;justify-content:space-between;
+}
+.logo{display:flex;align-items:center;gap:10px;text-decoration:none}
+.logo-icon{
+  width:34px;height:34px;border-radius:9px;
+  background:linear-gradient(135deg,#2563eb,#7c3aed);
+  display:flex;align-items:center;justify-content:center;
+  font-size:16px;color:#fff;flex-shrink:0;
+  box-shadow:0 2px 8px rgba(37,99,235,.35);
+}
+.logo-name{font-size:15px;font-weight:700;color:var(--slate-900);letter-spacing:-.01em}
+.logo-ver{
+  font-size:10px;font-weight:600;color:var(--slate-400);
+  background:var(--slate-100);border:1px solid var(--slate-200);
+  border-radius:4px;padding:2px 6px;
+}
+.nav-right{display:flex;align-items:center;gap:8px}
+.nav-badge{
+  font-size:11px;font-weight:600;letter-spacing:.04em;
+  color:var(--blue);background:var(--blue-lite);
+  border:1px solid #bfdbfe;border-radius:100px;
+  padding:3px 10px;
+}
+
+/* ─── Hero ───────────────────────────────────────────────── */
+.hero{
+  text-align:center;padding:52px 0 44px;
+  animation:fadeDown .5s ease both;
+}
+.hero h1{
+  font-size:clamp(26px,4vw,38px);font-weight:800;
+  letter-spacing:-.025em;color:var(--slate-900);
+  line-height:1.15;margin-bottom:12px;
+}
+.hero h1 span{color:var(--blue)}
+.hero p{
+  font-size:15px;color:var(--slate-500);line-height:1.7;
+  max-width:500px;margin:0 auto;
+}
+
+/* ─── Card ───────────────────────────────────────────────── */
+.card{
+  background:var(--white);border:1px solid var(--slate-200);
+  border-radius:var(--r-lg);box-shadow:var(--shadow-sm);
+  overflow:hidden;
+}
+
+/* ─── Upload grid ────────────────────────────────────────── */
+.upload-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:16px;
+  margin-bottom:16px;
+  animation:fadeUp .45s ease .1s both;
+}
+@media(max-width:640px){.upload-grid{grid-template-columns:1fr}}
+
+.upload-card{
+  background:var(--white);border:1px solid var(--slate-200);
+  border-radius:var(--r-lg);box-shadow:var(--shadow-sm);padding:20px;
+  display:flex;flex-direction:column;gap:14px;
+}
+.upload-header{display:flex;align-items:flex-start;gap:12px}
+.upload-icon-wrap{
+  width:38px;height:38px;border-radius:10px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;font-size:18px;
+}
+.upload-icon-wrap.src{background:#eff6ff}
+.upload-icon-wrap.tgt{background:#f0fdf4}
+.upload-header-text h3{
+  font-size:14px;font-weight:700;color:var(--slate-800);margin-bottom:2px;
+}
+.upload-header-text p{font-size:12px;color:var(--slate-400);line-height:1.5}
+
+/* Drop zone */
+.drop-zone{
+  border:2px dashed var(--slate-200);border-radius:var(--r-md);
+  padding:28px 20px;text-align:center;cursor:pointer;
+  transition:border-color .2s,background .2s;
+  background:var(--slate-50);position:relative;
+}
+.drop-zone:hover,.drop-zone.hover{
+  border-color:var(--blue);background:var(--blue-lite);
+}
+.drop-zone input[type=file]{
+  position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;
+}
+.dz-icon{font-size:26px;margin-bottom:8px;display:block;opacity:.55}
+.dz-main{font-size:13px;font-weight:600;color:var(--slate-700);margin-bottom:3px}
+.dz-sub{font-size:11px;color:var(--slate-400)}
+.dz-btn{
+  display:inline-block;margin-top:10px;
+  font-size:12px;font-weight:600;
+  color:var(--blue);background:var(--white);
+  border:1px solid var(--slate-200);border-radius:6px;
+  padding:5px 12px;cursor:pointer;
+  transition:border-color .15s,background .15s;
+  pointer-events:none;
+}
+.drop-zone:hover .dz-btn{border-color:var(--blue);background:var(--blue-lite)}
+
+/* File chips */
+.file-chips{display:flex;flex-direction:column;gap:6px}
+.chip{
+  display:flex;align-items:center;gap:8px;
+  background:var(--slate-50);border:1px solid var(--slate-200);
+  border-radius:7px;padding:7px 10px;
+  animation:chipIn .2s ease both;
+}
+.chip-icon{font-size:14px;flex-shrink:0;opacity:.7}
+.chip-name{
+  flex:1;font-size:12px;font-weight:500;color:var(--slate-700);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;
+}
+.chip-size{font-size:11px;color:var(--slate-400);flex-shrink:0}
+.chip-del{
+  width:18px;height:18px;border-radius:4px;flex-shrink:0;
+  border:none;background:none;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  color:var(--slate-400);font-size:14px;line-height:1;
+  transition:background .15s,color .15s;
+}
+.chip-del:hover{background:var(--red-bg);color:var(--red)}
+
+/* ─── Settings row ───────────────────────────────────────── */
+.settings-card{
+  background:var(--white);border:1px solid var(--slate-200);
+  border-radius:var(--r-lg);box-shadow:var(--shadow-sm);
+  padding:20px 24px;margin-bottom:16px;
+  display:flex;align-items:flex-end;gap:20px;flex-wrap:wrap;
+  animation:fadeUp .45s ease .2s both;
+}
+.field{display:flex;flex-direction:column;gap:5px;flex:1;min-width:180px}
+.field label{font-size:12px;font-weight:600;color:var(--slate-600);letter-spacing:.01em}
+.field input,.field select{
+  height:38px;padding:0 12px;font-size:13px;color:var(--slate-800);
+  background:var(--white);border:1px solid var(--slate-200);
+  border-radius:var(--r);outline:none;width:100%;
+  transition:border-color .15s,box-shadow .15s;
+  font-family:inherit;
+}
+.field input:focus,.field select:focus{
+  border-color:var(--blue);
+  box-shadow:0 0 0 3px var(--blue-ring);
+}
+.field select{cursor:pointer;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2394a3b8' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 12px center;
+  padding-right:32px;
+}
+
+/* ─── Submit button ──────────────────────────────────────── */
+.btn-wrap{animation:fadeUp .45s ease .3s both}
+.btn-process{
+  width:100%;height:50px;border:none;border-radius:var(--r-md);cursor:pointer;
+  background:linear-gradient(135deg,var(--blue) 0%,#4f46e5 100%);
+  color:#fff;font-size:15px;font-weight:700;font-family:inherit;
+  letter-spacing:.01em;
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  box-shadow:0 4px 14px rgba(37,99,235,.4);
+  transition:transform .2s,box-shadow .2s,opacity .2s;
+  position:relative;overflow:hidden;
+}
+.btn-process::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(255,255,255,.12),transparent);
+}
+.btn-process:hover:not(:disabled){
+  transform:translateY(-2px);
+  box-shadow:0 8px 24px rgba(37,99,235,.5);
+}
+.btn-process:active:not(:disabled){transform:translateY(0)}
+.btn-process:disabled{opacity:.55;cursor:not-allowed;transform:none !important}
+.btn-arrow{transition:transform .2s}
+.btn-process:hover .btn-arrow{transform:translateX(4px)}
+
+/* spinner */
+.spinner{
+  width:18px;height:18px;border:2.5px solid rgba(255,255,255,.3);
+  border-top-color:#fff;border-radius:50%;
+  animation:spin .65s linear infinite;flex-shrink:0;display:none;
+}
+.loading .spinner{display:block}
+.loading .btn-label{display:none}
+
+/* ─── Results ────────────────────────────────────────────── */
+#results-section{display:none}
+#results-section.visible{display:block;animation:fadeUp .4s ease both}
+
+.results-header{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:14px;flex-wrap:wrap;gap:10px;
+}
+.results-title{font-size:15px;font-weight:700;color:var(--slate-800)}
+
+/* Stats pills */
+.stats{display:flex;gap:8px;flex-wrap:wrap}
+.stat{
+  display:flex;align-items:center;gap:5px;
+  background:var(--white);border:1px solid var(--slate-200);
+  border-radius:100px;padding:4px 12px;
+  font-size:12px;font-weight:600;color:var(--slate-600);
+  box-shadow:var(--shadow-xs);
+}
+.stat b{color:var(--slate-900)}
+
+/* Result rows */
+.result-list{display:flex;flex-direction:column;gap:6px}
+.result-row{
+  display:flex;align-items:center;gap:12px;
+  background:var(--white);border:1px solid var(--slate-200);
+  border-radius:var(--r-md);padding:12px 16px;
+  box-shadow:var(--shadow-xs);
+  animation:fadeUp .3s ease both;
+  transition:box-shadow .2s;
+}
+.result-row:hover{box-shadow:var(--shadow)}
+.result-row.ok   {border-left:3px solid var(--green)}
+.result-row.warn {border-left:3px solid var(--amber)}
+.result-row.error{border-left:3px solid var(--red)}
+
+.ri-icon{font-size:16px;flex-shrink:0}
+.ri-file{
+  flex:1;font-size:13px;font-weight:500;color:var(--slate-700);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;
+}
+.ri-amc{
+  font-size:11px;font-weight:700;letter-spacing:.04em;
+  padding:3px 8px;border-radius:5px;flex-shrink:0;white-space:nowrap;
+}
+.ri-amc.ok   {background:var(--green-bg);color:var(--green);border:1px solid var(--green-bdr)}
+.ri-amc.warn {background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-bdr)}
+.ri-amc.error{background:var(--red-bg);  color:var(--red);  border:1px solid var(--red-bdr)}
+.ri-amc.blue {background:var(--blue-lite);color:var(--blue);border:1px solid #bfdbfe}
+
+.ri-filled{
+  font-size:12px;font-weight:700;color:var(--green);
+  flex-shrink:0;min-width:60px;text-align:right;
+}
+.ri-notes{
+  font-size:11px;color:var(--slate-400);flex-shrink:0;
+  max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+/* Source log (collapsible) */
+.src-toggle{
+  font-size:12px;color:var(--slate-400);cursor:pointer;
+  display:inline-flex;align-items:center;gap:4px;
+  margin-top:8px;user-select:none;
+}
+.src-toggle:hover{color:var(--slate-600)}
+.src-list{margin-top:10px;display:flex;flex-direction:column;gap:4px}
+.src-row{
+  display:flex;align-items:center;gap:10px;
+  font-size:12px;color:var(--slate-500);
+  padding:6px 0;border-bottom:1px solid var(--slate-100);
+}
+.src-row:last-child{border-bottom:none}
+.src-fn{flex:1;color:var(--slate-700);font-weight:500;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.src-amc{
+  font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;
+  background:var(--blue-lite);color:var(--blue);border:1px solid #bfdbfe;flex-shrink:0;
+}
+.src-msg{color:var(--slate-400);font-size:11px}
+
+/* ─── Download btn ───────────────────────────────────────── */
+.btn-dl{
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  width:100%;height:48px;border:none;border-radius:var(--r-md);cursor:pointer;
+  background:linear-gradient(135deg,#059669,#0891b2);
+  color:#fff;font-size:14px;font-weight:700;font-family:inherit;
+  letter-spacing:.01em;margin-top:14px;
+  box-shadow:0 4px 14px rgba(5,150,105,.35);
+  transition:transform .2s,box-shadow .2s;
+  position:relative;overflow:hidden;text-decoration:none;
+}
+.btn-dl::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(255,255,255,.1),transparent);
+}
+.btn-dl:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(5,150,105,.45)}
+
+/* ─── Empty state ────────────────────────────────────────── */
+.empty-state{
+  text-align:center;padding:40px 0;
+  font-size:13px;color:var(--slate-400);
+}
+
+/* ─── Footer ─────────────────────────────────────────────── */
+footer{
+  border-top:1px solid var(--slate-200);background:var(--white);
+  margin-top:48px;
+}
+.footer-inner{
+  max-width:1040px;margin:0 auto;padding:16px 24px;
+  display:flex;align-items:center;justify-content:space-between;
+  font-size:11.5px;color:var(--slate-400);
+}
+.footer-inner a{color:var(--slate-400);text-decoration:none}
+.footer-inner a:hover{color:var(--slate-600)}
+
+/* ─── Animations ─────────────────────────────────────────── */
+@keyframes fadeDown{from{opacity:0;transform:translateY(-18px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeUp  {from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)}}
+@keyframes chipIn  {from{opacity:0;transform:scale(.95)}       to{opacity:1;transform:scale(1)}}
+@keyframes spin    {to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- ── Navigation ──────────────────────────────────────────── -->
+<nav>
+  <div class="nav-inner">
+    <a class="logo" href="/">
+      <div class="logo-icon">📊</div>
+      <span class="logo-name">BrokerageAI</span>
+      <span class="logo-ver">v2.0</span>
+    </a>
+    <div class="nav-right">
+      <span class="nav-badge">EX-GST · Trail Commissions</span>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Page ────────────────────────────────────────────────── -->
+<div class="page">
+
+  <!-- Hero -->
+  <div class="hero">
+    <h1>Mutual Fund<br><span>Brokerage Filler</span></h1>
+    <p>Upload AMC source files and blank Excel templates — get filled trail commission structures in seconds.</p>
+  </div>
+
+  <!-- Upload zone grid -->
+  <div class="upload-grid">
+
+    <!-- Source files -->
+    <div class="upload-card">
+      <div class="upload-header">
+        <div class="upload-icon-wrap src">📄</div>
+        <div class="upload-header-text">
+          <h3>① Source Files</h3>
+          <p>AMC brokerage PDFs or Excel files with commission rates</p>
+        </div>
+      </div>
+      <div class="drop-zone" id="src-drop">
+        <input type="file" id="src-input" multiple accept=".pdf,.xlsx">
+        <span class="dz-icon">☁️</span>
+        <div class="dz-main">Drag &amp; drop files here</div>
+        <div class="dz-sub">PDF · Excel (.xlsx)</div>
+        <span class="dz-btn">Browse files</span>
+      </div>
+      <div class="file-chips" id="src-chips"></div>
+    </div>
+
+    <!-- Target templates -->
+    <div class="upload-card">
+      <div class="upload-header">
+        <div class="upload-icon-wrap tgt">📋</div>
+        <div class="upload-header-text">
+          <h3>② Target Templates</h3>
+          <p>Blank Excel templates to be filled with trail values</p>
+        </div>
+      </div>
+      <div class="drop-zone" id="tgt-drop">
+        <input type="file" id="tgt-input" multiple accept=".xlsx">
+        <span class="dz-icon">📂</span>
+        <div class="dz-main">Drag &amp; drop files here</div>
+        <div class="dz-sub">Excel only (.xlsx)</div>
+        <span class="dz-btn">Browse files</span>
+      </div>
+      <div class="file-chips" id="tgt-chips"></div>
+    </div>
+
+  </div>
+
+  <!-- Settings -->
+  <div class="settings-card">
+    <div class="field">
+      <label for="pwd">🔑 PDF Password</label>
+      <input type="password" id="pwd" placeholder="Leave blank if not encrypted">
+    </div>
+    <div class="field">
+      <label for="fmt">🎯 Target Format</label>
+      <select id="fmt">
+        <option value="auto">Auto-detect</option>
+        <option value="redos">Redos (column-based)</option>
+        <option value="vijay">Vijayinfotech (row-based)</option>
+      </select>
+    </div>
+    <div class="field" style="flex:0 0 auto;min-width:auto">
+      <label style="color:transparent;user-select:none">action</label>
+      <div style="font-size:11.5px;color:var(--slate-400);line-height:1.6;padding:0 2px">
+        ABSL rates are always available.<br>
+        Other AMCs need a source file.
+      </div>
+    </div>
+  </div>
+
+  <!-- Submit button -->
+  <div class="btn-wrap">
+    <button class="btn-process" id="btn-process" onclick="handleProcess()">
+      <div class="spinner"></div>
+      <span class="btn-label">Process &amp; Fill</span>
+      <span class="btn-arrow" style="font-size:16px">→</span>
+    </button>
+  </div>
+
+  <!-- Results (hidden until processed) -->
+  <div id="results-section" style="margin-top:24px">
+    <div class="results-header">
+      <div class="results-title">Results</div>
+      <div class="stats" id="stats-row"></div>
+    </div>
+    <div class="result-list" id="result-list"></div>
+    <div id="src-toggle-wrap"></div>
+    <div id="src-list-wrap" style="display:none"></div>
+    <a class="btn-dl" id="btn-download" href="#" style="display:none" onclick="handleDownload(event)">
+      📥&nbsp; Download Filled Files
+    </a>
+  </div>
+
+</div>
+
+<!-- ── Footer ──────────────────────────────────────────────── -->
+<footer>
+  <div class="footer-inner">
+    <span>BrokerageAI · Mutual Fund Brokerage Filler</span>
+    <span>EX-GST trail commissions only</span>
+  </div>
+</footer>
+
+<script>
+// ── File state ────────────────────────────────────────────────
+const state = { src: [], tgt: [], token: null };
+
+function fmtSize(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(0) + ' KB';
+  return (b/1048576).toFixed(1) + ' MB';
+}
+
+function fileIcon(name) {
+  return name.toLowerCase().endsWith('.pdf') ? '📕' : '📗';
+}
+
+function renderChips(listKey, containerId) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = '';
+  state[listKey].forEach((f, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.innerHTML = `
+      <span class="chip-icon">${fileIcon(f.name)}</span>
+      <span class="chip-name" title="${f.name}">${f.name}</span>
+      <span class="chip-size">${fmtSize(f.size)}</span>
+      <button class="chip-del" title="Remove" onclick="removeFile('${listKey}',${i},'${containerId}')">×</button>
+    `;
+    el.appendChild(chip);
+  });
+}
+
+function addFiles(listKey, files, containerId) {
+  const existing = new Set(state[listKey].map(f => f.name));
+  for (const f of files) {
+    if (!existing.has(f.name)) {
+      state[listKey].push(f);
+      existing.add(f.name);
+    }
+  }
+  renderChips(listKey, containerId);
+}
+
+function removeFile(listKey, idx, containerId) {
+  state[listKey].splice(idx, 1);
+  renderChips(listKey, containerId);
+}
+
+// ── Drop zones ────────────────────────────────────────────────
+function setupDropZone(dropId, inputId, listKey, containerId) {
+  const zone  = document.getElementById(dropId);
+  const input = document.getElementById(inputId);
+
+  input.addEventListener('change', () => {
+    addFiles(listKey, Array.from(input.files), containerId);
+    input.value = '';
+  });
+
+  zone.addEventListener('dragover', e => {
+    e.preventDefault(); zone.classList.add('hover');
+  });
+  zone.addEventListener('dragleave', () => zone.classList.remove('hover'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('hover');
+    const files = Array.from(e.dataTransfer.files).filter(f => {
+      const n = f.name.toLowerCase();
+      return n.endsWith('.pdf') || n.endsWith('.xlsx');
+    });
+    addFiles(listKey, files, containerId);
+  });
+}
+
+setupDropZone('src-drop', 'src-input', 'src', 'src-chips');
+setupDropZone('tgt-drop', 'tgt-input', 'tgt', 'tgt-chips');
+
+// ── Process ───────────────────────────────────────────────────
+async function handleProcess() {
+  const btn = document.getElementById('btn-process');
+
+  if (!state.src.length && !state.tgt.length) {
+    alert('Please add at least one source file and one target template.');
+    return;
+  }
+  if (!state.tgt.length) {
+    alert('Please add at least one target Excel template to fill.');
+    return;
+  }
+
+  // Loading state
+  btn.disabled = true;
+  btn.classList.add('loading');
+
+  // Hide previous results
+  const sec = document.getElementById('results-section');
+  sec.classList.remove('visible');
+  sec.style.display = 'none';
+
+  try {
+    const fd = new FormData();
+    state.src.forEach(f => fd.append('source_files', f));
+    state.tgt.forEach(f => fd.append('target_files', f));
+    fd.append('pdf_password', document.getElementById('pwd').value);
+    fd.append('vendor_fmt',   document.getElementById('fmt').value);
+
+    const res = await fetch('/api/process', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+
+    renderResults(data);
+    state.token = data.token;
+
+  } catch (err) {
+    alert('Error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('loading');
+  }
+}
+
+// ── Render results ────────────────────────────────────────────
+function badgeCls(amc, status) {
+  if (status === 'error') return 'error';
+  if (status === 'warn')  return 'warn';
+  if (amc === 'Vijayinfotech') return 'blue';
+  return 'ok';
+}
+
+function renderResults(data) {
+  // Stats
+  const stats = document.getElementById('stats-row');
+  stats.innerHTML = `
+    <div class="stat"><span>📁</span><b>${data.filled_count}</b> files filled</div>
+    <div class="stat"><span>✅</span><b>${data.total_matched.toLocaleString()}</b> schemes matched</div>
+    <div class="stat"><span>📄</span><b>${data.source_log.length}</b> sources parsed</div>
+  `;
+
+  // Target result rows
+  const list = document.getElementById('result-list');
+  list.innerHTML = '';
+  data.target_log.forEach((r, i) => {
+    const row = document.createElement('div');
+    row.className = `result-row ${r.status}`;
+    row.style.animationDelay = `${i * 0.05}s`;
+    const ico   = r.status === 'ok' ? '✅' : r.status === 'warn' ? '⚠️' : '❌';
+    const bcls  = badgeCls(r.amc, r.status);
+    const fcol  = r.status === 'ok' ? 'var(--green)' : 'var(--slate-400)';
+    row.innerHTML = `
+      <span class="ri-icon">${ico}</span>
+      <span class="ri-file" title="${r.file}">${r.file}</span>
+      <span class="ri-amc ${bcls}">${r.amc}</span>
+      <span class="ri-filled" style="color:${fcol}">${r.filled}</span>
+      <span class="ri-notes" title="${r.notes}">${r.notes}</span>
+    `;
+    list.appendChild(row);
+  });
+
+  // Source log toggle
+  const toggleWrap = document.getElementById('src-toggle-wrap');
+  const listWrap   = document.getElementById('src-list-wrap');
+  if (data.source_log.length) {
+    toggleWrap.innerHTML = `
+      <span class="src-toggle" onclick="toggleSrcLog(this)">
+        ▸ Show source file log (${data.source_log.length})
+      </span>`;
+    let srcHtml = '<div class="src-list">';
+    data.source_log.forEach(r => {
+      const ico = r.icon === 'ok' ? '✅' : r.icon === 'err' ? '❌' : '⚠️';
+      srcHtml += `
+        <div class="src-row">
+          <span>${ico}</span>
+          <span class="src-fn" title="${r.file}">${r.file}</span>
+          <span class="src-amc">${r.amc}</span>
+          <span class="src-msg">${r.msg}</span>
+        </div>`;
+    });
+    srcHtml += '</div>';
+    listWrap.innerHTML = srcHtml;
+    listWrap.style.display = 'none';
+  } else {
+    toggleWrap.innerHTML = '';
+    listWrap.innerHTML   = '';
+  }
+
+  // Download button
+  const dlBtn = document.getElementById('btn-download');
+  if (data.token && data.filled_count > 0) {
+    dlBtn.style.display = 'flex';
+    dlBtn.textContent   = `📥  Download ${data.filled_count} filled file${data.filled_count !== 1 ? 's' : ''}`;
+    dlBtn.href          = `/api/download/${data.token}`;
+  } else {
+    dlBtn.style.display = 'none';
+  }
+
+  // Show section
+  const sec = document.getElementById('results-section');
+  sec.style.display = 'block';
+  requestAnimationFrame(() => sec.classList.add('visible'));
+}
+
+function toggleSrcLog(el) {
+  const wrap = document.getElementById('src-list-wrap');
+  const open = wrap.style.display !== 'none';
+  wrap.style.display = open ? 'none' : 'block';
+  el.textContent = (open ? '▸ Show' : '▾ Hide') +
+    el.textContent.replace(/[▸▾] (Show|Hide)/, '');
+}
+
+function handleDownload(e) {
+  // Native browser download via href — let it happen naturally
+  setTimeout(() => {
+    document.getElementById('btn-download').style.display = 'none';
+  }, 1500);
+}
+</script>
+</body>
+</html>

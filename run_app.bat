@@ -1,11 +1,14 @@
 @echo off
 cd /d "%~dp0"
 echo Installing / updating dependencies...
-pip install -r requirements.txt
+pip install -r requirements.txt -q
 echo.
-echo Starting Brokerage Filler app...
-echo The browser will open automatically. Keep this window open while using the app.
-echo Close this window to stop the app.
+echo Starting BrokerageAI...
 echo.
-streamlit run app.py
+echo  Open your browser at:  http://localhost:8502
+echo.
+echo  Close this window to stop the app.
+echo.
+start "" "http://localhost:8502"
+python server.py
 pause
