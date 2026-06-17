@@ -273,9 +273,23 @@ _SOURCE_HINTS = {
     'tata':     ['tata brokerage','tata mutual fund commission'],
     'trust':    ['trust brokerage','trustmf brokerage'],
     'old_bridge':['old bridge arbitrage','old bridge flexi','old bridge focused',
-                  'old bridge fund commission','old bridge brokerage'],
+                  'old bridge fund commission','old bridge brokerage','old bridge mutual fund commission'],
     'icici':    ['icici prudential mutual fund commission','icici prudential brokerage',
                  'icici pru commission','icici prudential commission structure'],
+    # New AMCs
+    'bajaj':    ['bajaj finserv brokerage structure','bajaj finserv asset management brokerage'],
+    'baroda':   ['baroda bnp paribas brokerage','baroda bnp brokerage','baroda bnp commission structure'],
+    'edelweiss':['edelweiss brokerage structure','edelwiess brokerage structure'],
+    'iti':      ['iti mf combined ongoing brokerage','iti brokerage structure','iti commission structure',
+                 'iti ongoing brokerage'],
+    'jm':       ['jm mf brokerage structure','jm financial brokerage structure','jm brokerage structure'],
+    'quant':    ['quant mf brokerage','quant mutual fund brokerage','quant money managers'],
+    'uti':      ['uti brokerage structure','uti commission structure','uti asset management company limited'],
+    'whiteoak': ['whiteoak brokerage structure','whiteoak capital brokerage','whiteoak commission structure'],
+    '360one':   ['360 one brokerage structure','360 one asset management brokerage',
+                 '360 one commission structure','360one brokerage'],
+    'kotak':    ['kotak mahindra brokerage','kotak brokerage structure','kotak mf brokerage'],
+    'groww':    ['groww commission structure','groww brokerage structure'],
 }
 
 _TARGET_PREFIXES = {
@@ -300,21 +314,60 @@ _TARGET_PREFIXES = {
     'tata':     ['tata '],
     'trust':    ['trustmf'],
     'icici':    ['icici pru','icici prudential'],
+    'bajaj':    ['bajaj finserv'],
+    'baroda':   ['baroda bnp paribas'],
+    'edelweiss':['edelweiss '],
+    'iti':      ['iti '],
+    'jm':       ['jm '],
+    'quant':    ['quant '],
+    'uti':      ['uti '],
+    'whiteoak': ['whiteoak'],
+    '360one':   ['360 one'],
+    'kotak':    ['kotak mahindra','kotak '],
+    'groww':    ['groww '],
+    'old_bridge':['old bridge'],
 }
 
 def detect_source_amc(filename: str, preview: str = '') -> str | None:
-    # Normalise underscores → spaces so "LIC_MF_Commission_Structure" matches "lic mf commission"
     fn_norm = filename.replace('_', ' ')
     text = (fn_norm + ' ' + preview[:800]).lower()
+    fn   = fn_norm.lower()
+
+    # Skip Fixed Deposit / FD-only files early
+    if ('fixed deposit' in fn or (' fd ' in fn and 'brokerage' not in fn)
+            or fn.startswith('fd ')):
+        return None
+
+    # Step 1: hint-based match (exact phrase in filename+preview)
     for amc, hints in _SOURCE_HINTS.items():
         if any(h in text for h in hints):
             return amc
-    fn = fn_norm.lower()
+
+    # Step 2: generic AMC-key-in-filename (legacy + unambiguous new AMCs)
+    # Short keys (≤3 chars) must appear as whole word to avoid substring false-positives
+    # e.g. 'iti' inside 'opportunities', 'dsp' inside 'dsp-123' is fine but 'iti' in 'entities' is not
     for amc in _SOURCE_HINTS:
-        if amc in fn: return amc
-    if 'franklin' in fn: return 'ft'
-    if 'bank of india' in fn: return 'boi'
-    if 'old bridge' in fn: return 'old_bridge'
+        if amc not in fn: continue
+        if len(amc) <= 3 and not re.search(r'(?<![a-z])' + re.escape(amc) + r'(?![a-z])', fn):
+            continue
+        return amc
+
+    # Step 3: specific fallbacks for edge-case filenames
+    if 'franklin' in fn:                return 'ft'
+    if 'bank of india' in fn:           return 'boi'
+    if 'old bridge' in fn or 'old btidge' in fn: return 'old_bridge'
+    if 'bajaj finserv' in fn:           return 'bajaj'
+    if 'bajaj' in fn and 'brokerage' in fn: return 'bajaj'
+    if 'baroda bnp' in fn:              return 'baroda'
+    if 'edelweis' in fn:                return 'edelweiss'
+    if 'iti mf' in fn or ('iti' in fn and 'brokerage' in fn): return 'iti'
+    if 'jm mf' in fn or ('jm' in fn and 'brokerage' in fn):   return 'jm'
+    if 'quant' in fn and ('mf' in fn or 'brokerage' in fn):   return 'quant'
+    if 'uti brokerage' in fn or 'uti commission' in fn:        return 'uti'
+    if 'whiteoak' in fn:                return 'whiteoak'
+    if '360 one' in fn or (fn.startswith('360 ') and 'brokerage' in fn): return '360one'
+    if 'kotak' in fn and ('brokerage' in fn or 'commission' in fn): return 'kotak'
+    if 'groww' in fn:                   return 'groww'
     return None
 
 def detect_target_amc(wb) -> str | None:
@@ -433,15 +486,25 @@ def parse_absl() -> dict:
 def parse_axis(data: bytes, pwd: str = '') -> dict:
     txt = read_pdf(data, pwd)
     result = {}
+    skip_words = {'name', 'scheme', 'trail', 'year', 'fund', 'type', 'plan', 'category',
+                  'commission', 'brokerage', 'structure', 'applicable', 'rate', 'total',
+                  'addnl', 'special', 'n/a', 'nil'}
     for line in txt.split('\n'):
         line = line.strip()
         if not line: continue
+        ll = line.lower()
+        if not (ll.startswith('axis') or ('axis' in ll and any(
+                w in ll for w in ['fund', 'etf', 'sip', 'elss']))): continue
+        if ll.startswith('axis') and ll.split()[1:2] in [['mutual'], ['mf']]: continue
         nums = get_floats(line)
-        if len(nums) >= 4:
-            name_part = re.sub(r'[\d.%\s]+$', '', line).strip()
-            if name_part and len(name_part) > 5:
-                v = nums[0]
-                result[name_part] = (v, v, v, v)
+        if len(nums) >= 2:
+            # Strip from first decimal number onwards (handles "N/A", "NIL" in-between)
+            m_num = re.search(r'\s+\d+\.\d+', line)
+            name = line[:m_num.start()].strip() if m_num else line
+            name = re.sub(r'\s*\([^)]+\)\s*$', '', name).strip()  # strip trailing "(formerly...)"
+            if not name or len(name) < 5: continue
+            if name.lower().split()[0] not in ('axis',): continue
+            result[name] = (nums[0], nums[0], nums[0], nums[-1])
     return result
 
 
@@ -582,19 +645,33 @@ def parse_dsp(data: bytes, pwd: str = '') -> dict:
 
 
 def parse_ft(data: bytes, pwd: str = '') -> dict:
+    """Franklin Templeton – IN-GST ("inclusive of GST") → EX-GST after /1.18.
+    Format: '0.00 0.90  1) FUND NAME (CODE)[#*] 0.90 0.90 ExitLoadText CATEGORY'
+    The fund code (ALL-CAPS in parens) is the anchor; trail rates follow it.
+    """
     txt = read_pdf(data, pwd)
     result = {}
     for line in txt.split('\n'):
         line = line.strip()
-        m = re.match(r'\d+\)\s+(.+?)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*$', line)
+        # Primary: fund with code in parens: "N) FUND NAME (CODE)[#*] rate1 rate2 ..."
+        m = re.search(
+            r'(?<!\w)\d+\)\s+(.+?)\s*\([A-Z0-9]+\)[#*]*\s+([\d.]+)\s+([\d.]+)', line)
         if m:
-            name = m.group(1).strip()
-            name = re.sub(r'\s*\([A-Z]+\)[#*\s]*$', '', name).strip().rstrip('#*').strip()
-            t1, t2 = float(m.group(2)), float(m.group(5))
-            result[name] = (t1, t2)
+            name = m.group(1).strip().rstrip('#*').strip()
+            t1 = round(float(m.group(2)) / 1.18, 4)
+            t2 = round(float(m.group(3)) / 1.18, 4)
+            result[name] = (t1, t1, t1, t2)
             nu = name.upper()
-            if 'INDEX FUND' in nu and 'NSE NIFTY' in nu and 'PLAN' in nu:
-                result['FRANKLIN INDIA NSE NIFTY 50 INDEX FUND'] = (t1, t2)
+            if 'INDEX FUND' in nu and 'NIFTY 50' in nu:
+                result['FRANKLIN INDIA NSE NIFTY 50 INDEX FUND'] = (t1, t1, t1, t2)
+        else:
+            # Fallback: simpler "N)  FUND NAME  rate1 rate2"
+            m2 = re.search(r'(?<!\w)\d+\)\s+([A-Z].+?)\s{2,}([\d.]+)(?:\s+([\d.]+))?', line)
+            if m2:
+                name = m2.group(1).strip().rstrip('#*').strip()
+                t1 = round(float(m2.group(2)) / 1.18, 4)
+                t2 = round(float(m2.group(3)) / 1.18, 4) if m2.group(3) else t1
+                result[name] = (t1, t1, t1, t2)
     return result
 
 
@@ -680,21 +757,30 @@ def parse_lic(data: bytes, pwd: str = '') -> dict:
         line = line.strip()
         if not line.startswith('LIC'): continue
         nums = get_floats(line)
-        if len(nums) >= 12:
+        if len(nums) >= 4:
             name = re.sub(r'[\d.\s]+$', '', line).strip()
+            name = re.sub(r'\s*See\s+Overleaf\s*', '', name, flags=re.I).strip()
             # Strip only the LAST occurrence of a category word (PDF category column).
-            # The first occurrence is part of the scheme name itself.
-            # Only strip if ≥ 2 matches; if 1 match (garbled 2nd), keep the full name —
-            # best_match will still find it via substring matching.
             matches = list(cat_re.finditer(name))
             if len(matches) >= 2:
                 name = name[:matches[-1].start()].strip()
             if not name: continue
-            result[name] = (nums[1], nums[4], nums[7], nums[10])
+            # LIC rates are IN-GST ("brokerage shall be inclusive of GST") → convert to EX-GST
+            result[name] = tuple(round(n / 1.18, 4) for n in nums[:4])
+        elif len(nums) >= 2:
+            name = re.sub(r'[\d.\s]+$', '', line).strip()
+            name = re.sub(r'\s*See\s+Overleaf\s*', '', name, flags=re.I).strip()
+            matches = list(cat_re.finditer(name))
+            if len(matches) >= 2:
+                name = name[:matches[-1].start()].strip()
+            if not name: continue
+            v0, vn = round(nums[0] / 1.18, 4), round(nums[-1] / 1.18, 4)
+            result[name] = (v0, v0, v0, vn)
     return result
 
 
 def parse_mahindra(data: bytes, pwd: str = '') -> dict:
+    """Mahindra Manulife – IN-GST ("inclusive of any tax, GST") → EX-GST after /1.18."""
     txt = read_pdf(data, pwd)
     result = {}
     cat_words = ['ELSS (Tax Saver)','Large-Cap','Mid-Cap','Small Cap','Large & Mid Cap',
@@ -706,11 +792,14 @@ def parse_mahindra(data: bytes, pwd: str = '') -> dict:
         line = line.strip()
         if not line.startswith('Mahindra'): continue
         nums = get_floats(line)
-        if len(nums) >= 3:
-            name = re.sub(r'[\d.\s]+$', '', line).strip()
-            for w in cat_words: name = name.replace(w, '').strip()
-            if not name: continue
-            result[name] = (nums[0],)
+        if len(nums) >= 2:
+            name = re.sub(r'[\d.\s%]+$', '', line).strip()
+            for w in sorted(cat_words, key=len, reverse=True):
+                name = name.replace(w, '').strip()
+            name = re.sub(r'\s{2,}', ' ', name).strip()
+            if not name or len(name) < 5: continue
+            v0, vn = round(nums[0] / 1.18, 4), round(nums[-1] / 1.18, 4)
+            result[name] = (v0, v0, v0, vn)
     return result
 
 
@@ -764,7 +853,7 @@ def parse_nippon(data: bytes, pwd: str = '') -> dict:
         line = line.strip()
         if 'NIPPON INDIA' not in line.upper(): continue
         nums = get_floats(line)
-        if len(nums) >= 8:
+        if len(nums) >= 2:
             m = re.search(r'NIPPON\s+INDIA', line, re.I)
             if m:
                 part = line[m.start():]
@@ -773,7 +862,8 @@ def parse_nippon(data: bytes, pwd: str = '') -> dict:
             else:
                 name = re.sub(r'[\d.%\s]+$', '', line).strip()
             if not name: continue
-            result[name] = (nums[0], nums[1], nums[1], nums[2])
+            # T1=T2=T3 use first rate, T4+ use last (may differ in newer PDFs)
+            result[name] = (nums[0], nums[0], nums[0], nums[-1])
             nu = name.upper()
             if 'POWER' in nu and 'INFRA' in nu:
                 alias = re.sub(r'POWER\s*(?:AND|&)\s*INFRA', 'INFRASTRUCTURE', nu)
@@ -894,31 +984,377 @@ def parse_icici(data: bytes, pwd: str = '') -> dict:
     return result
 
 
+_BAJAJ_TYPES = sorted([
+    'Flexi Cap Fund','Liquid Fund','Overnight Fund','Money Market Fund','Banking & PSU Fund',
+    'Arbitrage Fund','Large Cap Fund','Mid Cap Fund','Small Cap Fund','ELSS Tax Saver Fund',
+    'Multi Asset Allocation Fund','Balanced Advantage Fund','Low Duration Fund',
+    'Short Duration Fund','Ultra Short Duration Fund','Conservative Hybrid Fund',
+    'Multi Cap Fund','Dynamic Bond Fund','Focused Fund','Equity Savings Fund',
+    'Value Fund','Small Cap Fund Regular',
+], key=len, reverse=True)
+
+def parse_bajaj(data: bytes, pwd: str = '') -> dict:
+    """Bajaj Finserv – IN-GST rates. Format: 'Bajaj Finserv X Fund [Cat] [ExitPeriod] T% T% T% Total%'"""
+    txt = read_pdf(data, pwd)
+    result = {}
+    for line in txt.split('\n'):
+        line = line.strip()
+        if not line.startswith('Bajaj Finserv'): continue
+        nums = get_floats(line)
+        if len(nums) < 3: continue
+        # Find where first float starts → everything before it is name + category + exit period
+        m = re.search(r'\d+\.\d+', line)
+        if not m: continue
+        pre = line[:m.start()].strip()
+        # Strip exit-load period (e.g. "6 Months", "7 days", "NIL", "15 Days")
+        pre = re.sub(r'\s+(?:NIL|\d+\s*(?:months?|days?|years?|day))\s*$', '', pre, flags=re.I).strip()
+        # Strip duplicate category suffix (e.g. "Flexi Cap Fund" repeated)
+        for t in _BAJAJ_TYPES:
+            if pre.endswith(' ' + t):
+                pre = pre[:-len(t)-1].strip()
+                break
+        if not pre or not pre.startswith('Bajaj Finserv') or len(pre) < 14: continue
+        # nums[0]=T1=T2=T3, nums[-1]=Total(3yr, ignore)
+        v = round(nums[0] / 1.18, 4)
+        result[pre] = (v, v, v, v)
+    return result
+
+
+def parse_baroda(data: bytes, pwd: str = '') -> dict:
+    """Baroda BNP Paribas – EX-GST. Format: 'Baroda BNP Paribas X Fund T1% T4+% Total%'"""
+    txt = read_pdf(data, pwd)
+    result = {}
+    lines = txt.split('\n')
+    merged, i = [], 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith('Baroda BNP Paribas') and not get_floats(line) and i + 1 < len(lines):
+            merged.append(line + ' ' + lines[i+1].strip()); i += 2
+        else:
+            merged.append(line); i += 1
+    for line in merged:
+        if not line.startswith('Baroda BNP Paribas'): continue
+        nums = get_floats(line)
+        if len(nums) >= 2:
+            name = re.sub(r'[\d.%\s]+$', '', line).strip()
+            if not name: continue
+            result[name] = (nums[0], nums[0], nums[0], nums[1])
+    return result
+
+
+def parse_edelweiss(data: bytes, pwd: str = '') -> dict:
+    """Edelweiss – IN-GST. Format: 'Edelweiss X Fund [ExitLoad] T1% T2% T3%'"""
+    txt = read_pdf(data, pwd)
+    result = {}
+    for line in txt.split('\n'):
+        line = line.strip()
+        if 'Edelweis' not in line: continue
+        idx = line.find('Edelweis')
+        part = line[idx:]
+        nums = get_floats(part)
+        if not nums: continue
+        # Strip trailing numbers to get name; also strip exit load description
+        name = re.sub(r'[\d.%\s]+$', '', part).strip()
+        name = re.sub(r'\s+Exit\s+load.*$', '', name, flags=re.I).strip()
+        if not name or len(name) < 5: continue
+        v = round(nums[0] / 1.18, 4)
+        result[name] = (v, v, v, v)
+    return result
+
+
+def parse_iti(data: bytes, pwd: str = '') -> dict:
+    """ITI MF – EX-GST. Format: '[Category] ITI X Fund T1% T1%'"""
+    txt = read_pdf(data, pwd)
+    result = {}
+    for line in txt.split('\n'):
+        line = line.strip()
+        if 'ITI ' not in line: continue
+        idx = line.find('ITI ')
+        part = line[idx:]
+        nums = get_floats(part)
+        if not nums: continue
+        name = re.sub(r'[\d.%\s]+$', '', part).strip()
+        if not name or len(name) < 5: continue
+        v = nums[0]
+        result[name] = (v, v, v, v)
+    return result
+
+
+def parse_jm(data: bytes, pwd: str = '') -> dict:
+    """JM Financial – IN-GST. Format: '[Category]JM X Fund [ExitLoad%] T1 T2'"""
+    txt = read_pdf(data, pwd)
+    result = {}
+    # Split entire text at each "JM " boundary to handle PDF-concatenated rows
+    for frag in re.split(r'(?=\bJM\s)', txt):
+        frag = frag.strip()
+        if not frag.startswith('JM'): continue
+        nums = get_floats(frag)
+        if len(nums) < 2: continue
+        name = re.sub(r'[\d.%\s]+$', '', frag).strip()
+        name = re.sub(r'\s*(?:NIL|refer\s+link\s+below).*$', '', name, flags=re.I).strip()
+        name = re.sub(r'[*#(].*$', '', name).strip()
+        if not name or len(name) < 5: continue
+        t1 = round(nums[-2] / 1.18, 4)
+        t2 = round(nums[-1] / 1.18, 4)
+        result[name] = (t1, t1, t1, t2)
+    return result
+
+
+def parse_quant(data: bytes, pwd: str = '') -> dict:
+    """Quant MF – IN-GST. Three AUM tiers: Base+, Base, Open. Use Base (middle) tier."""
+    txt = read_pdf(data, pwd)
+    result = {}
+    for line in txt.split('\n'):
+        line = line.strip()
+        ll = line.lower()
+        if not (lll := ll).startswith('quant'): continue
+        if any(w in lll for w in ('brokerage', 'category', 'taxation', 'exit load',
+                                   'base plus', 'base  plus', 'open', 'powered by',
+                                   'note', 'general', 'statutory')): continue
+        nums = get_floats(line)
+        if len(nums) < 3: continue
+        # Name = part before first double-space (two-space separator used in Quant PDFs)
+        parts = re.split(r'\s{2,}', line)
+        name = parts[0].strip() if parts else ''
+        if not name or len(name) < 5: continue
+        # Last 3 values are Base+, Base, Open → use Base (2nd from last)
+        v = round(nums[-2] / 1.18, 4)
+        result[name] = (v, v, v, v)
+    return result
+
+
+_UTI_CLASS = [
+    'Flexi Cap Fund','Large Cap Fund','Mid Cap Fund','Small Cap Fund','Value Fund',
+    'Dividend Yield Fund','Sectoral/ Thematic','Sectoral/Thematic','Focused Fund','ELSS',
+    'Liquid Fund','Credit Risk Fund','Long Duration Debt Fund','Gilt Fund',
+    'Index Funds','INDEX FUND','Gold ETF','Other ETF','Thematic Fund',
+    'Large &Mid Cap Fund','Large & Mid Cap Fund','Short Duration Debt Fund',
+    'Conservative Hybrid Fund','Money Market Fund','Dynamic Asset Allocation Fund',
+    'Aggressive Hybrid Fund','Equity Savings Fund','Multi Cap Fund',
+    'Banking & PSU Debt Fund','Hybrid Fund','Debt Fund',
+]
+
+def parse_uti(data: bytes, pwd: str = '') -> dict:
+    """UTI – IN-GST. Format: 'UTI X Fund [Classification] [ExitLoad] T1 T2 [B30]'"""
+    txt = read_pdf(data, pwd)
+    result = {}
+    lines = txt.split('\n')
+    merged, i = [], 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith('UTI ') and not get_floats(line) and i + 1 < len(lines):
+            merged.append(line + ' ' + lines[i+1].strip()); i += 2
+        else:
+            merged.append(line); i += 1
+    for line in merged:
+        if not line.startswith('UTI '): continue
+        nums = get_floats(line)
+        if len(nums) < 2: continue
+        name = re.sub(r'[\d.%\s-]+$', '', line).strip()
+        # Strip exit-load period "<1 Year - 1%" etc.
+        name = re.sub(r'\s*[<>]?\d.*$', '', name).strip()
+        name = re.sub(r'\s*NIL\s*$', '', name, flags=re.I).strip()
+        # Strip "(Formerly UTI ...)" notes
+        name = re.sub(r'\s*\(Formerly.*?\)', '', name).strip()
+        # Strip classification suffix
+        for cls in sorted(_UTI_CLASS, key=len, reverse=True):
+            if name.endswith(cls):
+                name = name[:-len(cls)].strip()
+                break
+        if not name or not name.startswith('UTI'): continue
+        t1 = round(nums[0] / 1.18, 4)
+        t2 = round(nums[1] / 1.18, 4)
+        result[name] = (t1, t1, t1, t2)
+    return result
+
+
+def parse_whiteoak(data: bytes, pwd: str = '') -> dict:
+    """WhiteOak Capital – IN-GST. Format: '[Category] WHITEOAK X FUND T1 T2 T3 T4 [ExitLoad]'"""
+    txt = read_pdf(data, pwd)
+    result = {}
+    for line in txt.split('\n'):
+        line = line.strip()
+        if 'WHITEOAK' not in line.upper() and 'WhiteOak' not in line: continue
+        idx = line.upper().find('WHITEOAK')
+        if idx < 0: idx = line.find('WhiteOak')
+        part = line[idx:]
+        # Strip exit load description before extracting numbers
+        part_clean = re.sub(r'\s*(?:Lock\s+in|\d+%\s+before|NIL|Refer).*$', '', part, flags=re.I).strip()
+        nums = get_floats(part_clean) or get_floats(part)
+        if not nums: continue
+        name = re.sub(r'[\d.%\s]+$', '', part_clean).strip()
+        name = re.sub(r'\s*\([A-Z]{2,6}\)\s*', ' ', name).strip()  # Strip "(YFCF)" ticker codes
+        if not name or len(name) < 5: continue
+        if len(nums) >= 4:
+            v1 = round(nums[0] / 1.18, 4)
+            v4 = round(nums[3] / 1.18, 4)
+            result[name] = (v1, v1, v1, v4)
+        else:
+            v = round(nums[0] / 1.18, 4)
+            result[name] = (v, v, v, v)
+    return result
+
+
+def parse_360one(data: bytes, pwd: str = '') -> dict:
+    """360 ONE – IN-GST.
+    Format A (older): '360 ONE Fund Name' on its own line, rate on next line.
+    Format B (newer): 'Category  360 ONE Fund Name  rate%' all on one line.
+    Additional Trail section at bottom is skipped (it uses smaller booster rates).
+    """
+    txt = read_pdf(data, pwd)
+    result = {}
+    in_additional = False
+    lines = txt.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        ll = line.lower()
+        if 'additional trail' in ll or 'additional brokerage' in ll:
+            in_additional = True
+        if in_additional:
+            i += 1
+            continue
+        has_360 = '360 ONE' in line or '360 One' in line
+        if has_360:
+            idx = line.find('360 ONE')
+            if idx < 0: idx = line.find('360 One')
+            part = line[idx:]
+            nums_inline = get_floats(part)
+            if nums_inline:
+                # Format B: rate on same line
+                name = re.sub(r'[\d.%\s]+$', '', part).strip()
+                if name and len(name) > 5:
+                    v = round(nums_inline[0] / 1.18, 4)
+                    result[name] = (v, v, v, v)
+            else:
+                # Format A: rate on next line
+                name = part.strip()
+                for j in range(i + 1, min(i + 4, len(lines))):
+                    nxt = lines[j].strip()
+                    if '360' in nxt: break
+                    nums = get_floats(nxt)
+                    if nums:
+                        v = round(nums[0] / 1.18, 4)
+                        result[name] = (v, v, v, v)
+                        break
+        i += 1
+    return result
+
+
+def parse_kotak(data: bytes, pwd: str = '') -> dict:
+    """Kotak – EX-GST. Complex table: 'Lump sum 1 to MAX [thld] T1 T2 T3 T4 T5' before scheme name."""
+    txt = read_pdf(data, pwd)
+    # Normalise "Lump sum1" / "Systematic1" → add space
+    txt = txt.replace('Lump sum1', 'Lump sum 1').replace('Systematic1', 'Systematic 1')
+    # Merge split scheme names: "...Index\nFund12-Apr-..." / "...50\nIndex Fund\n01..."
+    txt = re.sub(r'([A-Za-z0-9])\n((?:[Ii]ndex\s+)?(?:FUND|Fund))', r'\1 \2', txt)
+    txt = re.sub(r'([A-Za-z0-9])\n(INDEX)', r'\1 \2', txt)
+
+    result = {}
+    lines = txt.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        m = re.match(
+            r'Lump\s+sum\s+\d+\s+to\s+MAX\s+[\d.]+\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)',
+            line, re.I)
+        if m:
+            t = [float(m.group(x)) for x in range(1, 6)]
+            # Scheme name appears in the next 1-3 lines
+            for j in range(i + 1, min(i + 5, len(lines))):
+                nxt = lines[j].strip()
+                if 'KOTAK' not in nxt.upper(): continue
+                name = nxt
+                # Strip trailing date "01-Apr-2024 to 30-Jun-2024 ..."
+                name = re.sub(r'\s*\d{2}-[A-Za-z]+-\d{4}.*$', '', name).strip()
+                # Strip type labels directly appended without space: "FundINDEX" / "FUNDINDEX" → "Fund"
+                name = re.sub(r'(?<=[A-Za-z])(?:INDEX|EQUITY|DEBT|HYBRID|FIXED).*$', '', name).strip()
+                # Strip space-separated double type labels: "Fund INDEX INDEX" → "Fund"
+                name = re.sub(r'\s+(?:INDEX|EQUITY|DEBT|HYBRID)\s+(?:INDEX|EQUITY|DEBT|HYBRID).*$',
+                               '', name).strip()
+                name = re.sub(r'\s*FIXED\s+NO.*$', '', name, flags=re.I).strip()
+                # Strip trailing single type label that appears after "Fund": "...Fund INDEX" → "...Fund"
+                name = re.sub(r'(?i)(fund)\s+(?:INDEX|EQUITY|DEBT|HYBRID|LIQUID)\s*$', r'\1', name).strip()
+                if name and len(name) > 5:
+                    result[name] = (t[0], t[1], t[2], t[3])
+                break
+        i += 1
+    return result
+
+
+def parse_groww(data: bytes, pwd: str = '') -> dict:
+    """Groww – IN-GST. Format: 'Groww X Fund\\nT1%\\nT2%\\nT3%'"""
+    txt = read_pdf(data, pwd)
+    result = {}
+    lines = txt.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith('Groww ') or line.startswith(' Groww '):
+            name = line.strip()
+            nums = get_floats(line)
+            if not nums and i + 1 < len(lines):
+                nums = get_floats(lines[i + 1])
+            if nums:
+                v = round(nums[0] / 1.18, 4)
+                result[name] = (v, v, v, v)
+        i += 1
+    return result
+
+
+def parse_old_bridge(data: bytes, pwd: str = '') -> dict:
+    """Old Bridge – IN-GST. Format: 'Old Bridge X Fund  T%  p.a.*'"""
+    txt = read_pdf(data, pwd)
+    result = {}
+    for line in txt.split('\n'):
+        line = line.strip()
+        if not line.startswith('Old Bridge'): continue
+        nums = get_floats(line)
+        if not nums: continue
+        name = re.sub(r'\s*[\d.%]+.*$', '', line).strip()
+        name = name.rstrip('*').strip()
+        if not name or len(name) < 5: continue
+        v = round(nums[0] / 1.18, 4)
+        result[name] = (v, v, v, v)
+    return result
+
+
 # ── Parser registry ───────────────────────────────────────────────────────────
 
 def get_parser(amc: str):
     """Return (parser_fn, needs_bytes) for the given AMC identifier."""
     return {
-        'absl':     (parse_absl,     False),
-        'axis':     (parse_axis,     True),
-        'bandhan':  (parse_bandhan,  True),
-        'boi':      (parse_boi,      True),
-        'canara':   (parse_canara,   True),
-        'dsp':      (parse_dsp,      True),
-        'ft':       (parse_ft,       True),
-        'hdfc':     (parse_hdfc,     True),
-        'hsbc':     (parse_hsbc,     True),
-        'invesco':  (parse_invesco,  True),
-        'lic':      (parse_lic,      True),
-        'mahindra': (parse_mahindra, True),
-        'mirae':    (parse_mirae,    True),
-        'motilal':  (parse_motilal,  True),
-        'nippon':   (parse_nippon,   True),
-        'pgim':     (parse_pgim,     True),
-        'sbi':      (parse_sbi,      True),
-        'sundaram': (parse_sundaram, True),
-        'tata':     (parse_tata,     True),
-        'trust':    (parse_trust,    True),
-        'icici':    (parse_icici,    True),
-        'old_bridge': (None,         False),  # no parser yet — shows "No parser available"
+        'absl':      (parse_absl,      False),
+        'axis':      (parse_axis,      True),
+        'bandhan':   (parse_bandhan,   True),
+        'boi':       (parse_boi,       True),
+        'canara':    (parse_canara,    True),
+        'dsp':       (parse_dsp,       True),
+        'ft':        (parse_ft,        True),
+        'hdfc':      (parse_hdfc,      True),
+        'hsbc':      (parse_hsbc,      True),
+        'invesco':   (parse_invesco,   True),
+        'lic':       (parse_lic,       True),
+        'mahindra':  (parse_mahindra,  True),
+        'mirae':     (parse_mirae,     True),
+        'motilal':   (parse_motilal,   True),
+        'nippon':    (parse_nippon,    True),
+        'pgim':      (parse_pgim,      True),
+        'sbi':       (parse_sbi,       True),
+        'sundaram':  (parse_sundaram,  True),
+        'tata':      (parse_tata,      True),
+        'trust':     (parse_trust,     True),
+        'icici':     (parse_icici,     True),
+        'old_bridge':(parse_old_bridge,True),
+        'bajaj':     (parse_bajaj,     True),
+        'baroda':    (parse_baroda,    True),
+        'edelweiss': (parse_edelweiss, True),
+        'iti':       (parse_iti,       True),
+        'jm':        (parse_jm,        True),
+        'quant':     (parse_quant,     True),
+        'uti':       (parse_uti,       True),
+        'whiteoak':  (parse_whiteoak,  True),
+        '360one':    (parse_360one,    True),
+        'kotak':     (parse_kotak,     True),
+        'groww':     (parse_groww,     True),
     }.get(amc, (None, False))
