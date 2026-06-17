@@ -2,15 +2,16 @@
 server.py  –  BrokerageAI FastAPI backend
 Run:  python server.py   (or via run_app.bat)
 """
-import io, uuid, zipfile, traceback
+import io, uuid, zipfile, traceback, os
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from parsers import (
     detect_source_amc, detect_target_amc, get_parser,
     fill_workbook, fill_workbook_vijay, detect_format,
-    read_excel_wb, parse_absl,
+    read_excel_wb, parse_absl, clear_match_cache,
 )
 try:
     from parsers import read_pdf as _read_pdf
@@ -20,10 +21,20 @@ except ImportError:
 app = FastAPI(title="BrokerageAI")
 _downloads: dict[str, bytes] = {}          # token → zip bytes (cleared after download)
 
+# Determine static dir (React dist/ next to server.py)
+_BASE = os.path.dirname(os.path.abspath(__file__))
+_DIST = os.path.join(_BASE, "dist")
+_DIST_EXISTS = os.path.isdir(_DIST)
+
+if _DIST_EXISTS:
+    app.mount("/assets", StaticFiles(directory=os.path.join(_DIST, "assets")), name="assets")
+
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui():
-    with open("index.html", encoding="utf-8") as f:
+    if _DIST_EXISTS:
+        return FileResponse(os.path.join(_DIST, "index.html"))
+    with open(os.path.join(_BASE, "index.html"), encoding="utf-8") as f:
         return f.read()
 
 
@@ -34,6 +45,7 @@ async def process(
     pdf_password: str = Form(default=""),
     vendor_fmt:   str = Form(default="auto"),
 ):
+    clear_match_cache()   # fresh norms for each request
     # ── Step 1: parse source files ────────────────────────────────────────
     source_data: dict[str, dict] = {}
     source_log:  list[dict]      = []
@@ -127,11 +139,16 @@ async def process(
                 buf = io.BytesIO(); wb.save(buf)
                 filled_files.append((name, buf.getvalue()))
                 total = len(filled) + len(not_found)
+                # Show a sample of unmatched names so naming issues can be diagnosed
+                sample = not_found[:8]
+                notes = (f"{len(not_found)} not matched — sample: {' | '.join(sample)}"
+                         if not_found else "All matched")
                 target_log.append({
                     "icon": "ok", "file": name, "amc": "Vijayinfotech",
                     "filled": f"{len(filled)}/{total}",
-                    "notes": f"{len(not_found)} not matched" if not_found else "All matched",
+                    "notes": notes,
                     "status": "ok",
+                    "unmatched_sample": not_found[:20],
                 })
             except Exception:
                 target_log.append({"icon": "err", "file": name, "amc": "Vijayinfotech",

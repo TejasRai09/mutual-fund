@@ -1,7 +1,13 @@
 @echo off
 cd /d "%~dp0"
-echo Installing / updating dependencies...
+echo Installing / updating Python dependencies...
 pip install -r requirements.txt -q
+echo.
+echo Building React frontend...
+cd frontend
+call npm install -q
+call npm run build
+cd ..
 echo.
 echo Starting BrokerageAI...
 echo.

@@ -50,8 +50,11 @@ def get_all_nums(line):
 
 def norm(s: str) -> str:
     s = str(s).lower().strip()
+    # AMC name aliases
     s = s.replace('aditya birla sun life', 'absl')
     s = s.replace('icici prudential', 'icici pru')
+    s = s.replace('reliance', 'nippon india')   # Reliance→Nippon (legacy vijay names)
+    # Punctuation / separators
     s = re.sub(r'\s*&\s*', ' and ', s)
     s = re.sub(r"'", ' ', s)
     s = re.sub(r'-', ' ', s)
@@ -71,6 +74,11 @@ def norm(s: str) -> str:
     ]:
         s = s.replace(old, new)
     s = re.sub(r'\s+', ' ', s).strip()
+    # Strip common plan/option suffixes that vijayinfotech appends
+    s = re.sub(r'\b(regular|direct)\s+plan\b\s*', '', s).strip()
+    s = re.sub(r'\b(regular|direct)\s+(growth|idcw|dividend)\b\s*', '', s).strip()
+    s = re.sub(r'\bgrowth\s+option\b\s*', '', s).strip()
+    s = re.sub(r'\s+', ' ', s).strip()
     s = re.sub(r'\b([a-z])(\s[a-z])+\b', lambda m: m.group(0).replace(' ', ''), s)
     return re.sub(r'\s+', ' ', s).strip()
 
@@ -81,6 +89,10 @@ def _strip_word(text, word):
 
 # Per-data-dict index cache (avoids re-computing norm() on source keys)
 _match_idx_cache: dict = {}
+
+def clear_match_cache():
+    """Call this when source data changes between requests."""
+    _match_idx_cache.clear()
 
 def _get_match_idx(data: dict) -> dict:
     """Return (or build) a pre-normalized index for `data`."""
@@ -235,7 +247,7 @@ def fill_workbook_vijay(wb, data: dict):
         filled_set.add(s)
 
     blank_set = {s for s, m in cache.items() if m is None} - filled_set
-    return list(filled_set), list(blank_set)
+    return list(filled_set), sorted(blank_set)
 
 # ── AMC detection ──────────────────────────────────────────────────────────────
 
@@ -260,7 +272,10 @@ _SOURCE_HINTS = {
     'sundaram': ['sundaram brokerage'],
     'tata':     ['tata brokerage','tata mutual fund commission'],
     'trust':    ['trust brokerage','trustmf brokerage'],
-    'icici':    ['icici prudential mutual fund commission','commission structure'],
+    'old_bridge':['old bridge arbitrage','old bridge flexi','old bridge focused',
+                  'old bridge fund commission','old bridge brokerage'],
+    'icici':    ['icici prudential mutual fund commission','icici prudential brokerage',
+                 'icici pru commission','icici prudential commission structure'],
 }
 
 _TARGET_PREFIXES = {
@@ -288,15 +303,18 @@ _TARGET_PREFIXES = {
 }
 
 def detect_source_amc(filename: str, preview: str = '') -> str | None:
-    text = (filename + ' ' + preview[:800]).lower()
+    # Normalise underscores → spaces so "LIC_MF_Commission_Structure" matches "lic mf commission"
+    fn_norm = filename.replace('_', ' ')
+    text = (fn_norm + ' ' + preview[:800]).lower()
     for amc, hints in _SOURCE_HINTS.items():
         if any(h in text for h in hints):
             return amc
-    fn = filename.lower()
+    fn = fn_norm.lower()
     for amc in _SOURCE_HINTS:
         if amc in fn: return amc
     if 'franklin' in fn: return 'ft'
     if 'bank of india' in fn: return 'boi'
+    if 'old bridge' in fn: return 'old_bridge'
     return None
 
 def detect_target_amc(wb) -> str | None:
@@ -513,7 +531,8 @@ def parse_boi(data: bytes, pwd: str = '') -> dict:
     for line in merged:
         line = re.sub(r'Click\s*[Hh]ere', '', line).strip()
         if not line.startswith('Bank of India'): continue
-        nums = get_floats(line)
+        # Use get_all_nums so integer T4+ values (e.g. "1 Click here" → "1") are captured
+        nums = [n for n in get_all_nums(line) if 0.01 <= n <= 5.0]
         if len(nums) >= 2:
             name = re.sub(r'[\d.%\s]+$', '', line).strip()
             result[name] = (nums[0], nums[0], nums[0], nums[1])
@@ -538,7 +557,10 @@ def parse_canara(data: bytes, pwd: str = '') -> dict:
             name = re.sub(r'[\d.%\s]+$', '', line)
             name = re.sub(r'\d.*', '', name).strip()
             if not name: continue
-            base = nums[1] if len(nums) >= 3 else nums[0]
+            # CANARA triplet: [Total_IN-GST, Base_EX-GST, GST_amount]
+            # When exit load has decimal (e.g. "1.00%"), get_floats picks it up prepended.
+            # nums[-2] always gives Base_EX-GST regardless of whether exit load is present.
+            base = nums[-2]
             result[name] = (base,)
     return result
 
@@ -641,23 +663,32 @@ def parse_invesco(data: bytes, pwd: str = '') -> dict:
 
 def parse_lic(data: bytes, pwd: str = '') -> dict:
     txt = read_pdf(data, pwd)
+    # Fix PDF split-decimal artifacts: "1. 14" → "1.14", "1 .27" → "1.27"
+    txt = re.sub(r'(\d)\.\s+(\d)', r'\1.\2', txt)
+    txt = re.sub(r'(\d)\s+\.(\d)', r'\1.\2', txt)
     result = {}
     cat_re = re.compile(
-        r'\b(FLEXI CAP FUND|LARGE CAP FUND|LARGE & MIDCAP FUND|CHILDREN\'S FUND|'
-        r'MULTI CAP FUND|MIDCAP FUND|SMALL CAP FUND|EQUITY DIVIDEND YIELD|'
-        r'EQUITY FOCUSED FUND|EQUITY VALUE FUND|SECTORAL/THEMATIC FUND|'
-        r'EQUITY SAVINGS FUND|ARBITRAGE FUND|DYNAMIC ASSET ALLOCATION|ELSS|'
+        r'\b(FLEXI CAP FUND|LARGE CAP FUND|LARGE & MIDCAP FUND|CHILDREN\'?S FUND|'
+        r'MULTI ?CAP FUND|MID ?CAP FUND|SMALL CAP FUND|EQUITY DIVIDEND YIELD|'
+        r'EQUITY FOCUSED FUND|EQUITY VALUE FUND|SECTORAL/?THEMATIC FUND|'
+        r'EQUITY SAVINGS FUND|ARBITRAGE FUND|DYNAMIC ASSET ALLOCAT\w*|ELSS|'
         r'INDEX FUND|GOLD FUND|MEDIUM TO LONG DURATION FUND|MONEY MARKET FUND|'
         r'BANKING & PSU DEBT FUND|GILT FUND|LOW DURATION FUND|SHORT DURATION FUND|'
-        r'OVERNIGHT FUND|ULTRA SHORT DURATION FUND|LIQUID FUND|'
-        r'CONSERVATIVE HYBRID FUND|AGGRESSIVE HYBRID FUND)\b', re.I)
+        r'OVERNIGHT FUND|ULTRA SHORT DURATION\s+FUND|LIQUID FUND|'
+        r'CONSERVATIVE HYBRID\s+FUND|AGGRESSIVE HYBRID FUND)\b', re.I)
     for line in txt.split('\n'):
         line = line.strip()
         if not line.startswith('LIC'): continue
         nums = get_floats(line)
         if len(nums) >= 12:
             name = re.sub(r'[\d.\s]+$', '', line).strip()
-            name = cat_re.sub('', name).strip()
+            # Strip only the LAST occurrence of a category word (PDF category column).
+            # The first occurrence is part of the scheme name itself.
+            # Only strip if ≥ 2 matches; if 1 match (garbled 2nd), keep the full name —
+            # best_match will still find it via substring matching.
+            matches = list(cat_re.finditer(name))
+            if len(matches) >= 2:
+                name = name[:matches[-1].start()].strip()
             if not name: continue
             result[name] = (nums[1], nums[4], nums[7], nums[10])
     return result
@@ -716,7 +747,10 @@ def parse_motilal(data: bytes, pwd: str = '') -> dict:
         nums = get_all_nums(line)
         if len(nums) >= 6:
             name = re.sub(r'[\d.\s]+$', '', line).strip()
-            result[name] = (round(nums[0]/100,4),)*3 + (round(nums[3]/100,4),)
+            # Index fund names embed numbers (e.g. "Nifty 150", "Nifty 500").
+            # Trail BPS always occupy the last 9 positions: [T1_EX, T1_GST, T1_IN] × 2 + [3yr_cum × 3].
+            t = nums[-9:] if len(nums) >= 9 else nums
+            result[name] = (round(t[0]/100,4),)*3 + (round(t[3]/100,4),)
         elif len(nums) == 2:
             name = re.sub(r'[\d.\s]+$', '', line).strip()
             result[name] = (round(nums[0]/100,4),)*3 + (round(nums[1]/100,4),)
@@ -758,15 +792,16 @@ def parse_pgim(data: bytes, pwd: str = '') -> dict:
         line = line.strip()
         if not line.startswith('PGIM'): continue
         nums = get_floats(line)
+        name = re.sub(r'[\d.%\s]+$', '', line).strip()
+        name = re.sub(r'\d+\.?\d*%.*', '', name).strip()
+        if not name: continue
         if len(nums) >= 4:
-            name = re.sub(r'[\d.%\s]+$', '', line).strip()
-            name = re.sub(r'\d+\.?\d*%.*', '', name).strip()
-            if not name: continue
-            result[name] = (nums[0], nums[0], nums[0], nums[3])
+            # PGIM columns: [Total_Y1, Base, Add_Trail, T4+]
+            # Equity funds prepend exit load (e.g. "0.50%") → 5 floats total.
+            # Use the last 4 to always get [Total_Y1, Base, Add, T4+] correctly.
+            t = nums[-4:]
+            result[name] = (t[0], t[0], t[0], t[3])
         elif len(nums) == 3:
-            name = re.sub(r'[\d.%\s]+$', '', line).strip()
-            name = re.sub(r'\d+\.?\d*%.*', '', name).strip()
-            if not name: continue
             result[name] = (nums[0], nums[0], nums[0], nums[0])
     return result
 
@@ -837,7 +872,7 @@ def parse_trust(data: bytes, pwd: str = '') -> dict:
     return result
 
 
-def parse_icici(data: bytes) -> dict:
+def parse_icici(data: bytes, pwd: str = '') -> dict:
     """ICICI source is an Excel file; values are decimal fractions (×100 → %)."""
     wb = read_excel_wb(data)
     ws = wb.active
@@ -885,4 +920,5 @@ def get_parser(amc: str):
         'tata':     (parse_tata,     True),
         'trust':    (parse_trust,    True),
         'icici':    (parse_icici,    True),
+        'old_bridge': (None,         False),  # no parser yet — shows "No parser available"
     }.get(amc, (None, False))
