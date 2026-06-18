@@ -1367,18 +1367,32 @@ def parse_groww(data: bytes, pwd: str = '') -> dict:
 
 
 def parse_old_bridge(data: bytes, pwd: str = '') -> dict:
-    """Old Bridge – IN-GST. Format: 'Old Bridge X Fund  T%  p.a.*'"""
+    """Old Bridge – EX-GST ('exclusive of any GST'). T1=T2=T3=T4+.
+    Old format (single value): 'Old Bridge X Fund  1.05% p.a.*'
+    New format (3 columns):   'Old Bridge X Fund – Regular Plan  EX-GST  GST  IN-GST'
+    Fund names may be split across two lines (e.g. 'Old Bridge Arbitrage Fund –\nRegular Plan  0.72*').
+    """
     txt = read_pdf(data, pwd)
     result = {}
-    for line in txt.split('\n'):
-        line = line.strip()
+    lines = txt.split('\n')
+    merged, i = [], 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith('Old Bridge') and not get_floats(line) and i + 1 < len(lines):
+            merged.append(line + ' ' + lines[i+1].strip()); i += 2
+        else:
+            merged.append(line); i += 1
+    for line in merged:
+        line = re.sub(r'\s+', ' ', line.strip())
         if not line.startswith('Old Bridge'): continue
         nums = get_floats(line)
         if not nums: continue
-        name = re.sub(r'\s*[\d.%]+.*$', '', line).strip()
-        name = name.rstrip('*').strip()
+        name = re.sub(r'\s*[\d.%*]+.*$', '', line).strip()
+        # Strip "– Regular Plan" / "– Direct Plan" suffix
+        name = re.sub(r'\s*–\s*(?:Regular|Direct)\s+Plan.*$', '', name, flags=re.I).strip()
+        name = name.rstrip('*–').strip()
         if not name or len(name) < 5: continue
-        v = round(nums[0] / 1.18, 4)
+        v = nums[0]   # EX-GST already; do NOT divide by 1.18
         result[name] = (v, v, v, v)
     return result
 
