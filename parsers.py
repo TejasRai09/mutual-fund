@@ -335,7 +335,8 @@ def detect_source_amc(filename: str, preview: str = '') -> str | None:
 
     # Skip Fixed Deposit / FD-only files early
     if ('fixed deposit' in fn or (' fd ' in fn and 'brokerage' not in fn)
-            or fn.startswith('fd ')):
+            or fn.startswith('fd ')
+            or 'fd fi list' in fn):   # JM "FD FI List & Brokerage Payout" files
         return None
 
     # Step 1: hint-based match (exact phrase in filename+preview)
