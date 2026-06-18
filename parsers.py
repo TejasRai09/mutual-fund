@@ -284,7 +284,7 @@ _SOURCE_HINTS = {
                  'iti ongoing brokerage'],
     'jm':       ['jm mf brokerage structure','jm financial brokerage structure','jm brokerage structure'],
     'quant':    ['quant mf brokerage','quant mutual fund brokerage','quant money managers'],
-    'uti':      ['uti brokerage structure','uti commission structure','uti asset management company limited'],
+    'uti':      ['uti brokerage structure','uti commission structure','uti asset management company limited','uti quant fund'],
     'whiteoak': ['whiteoak brokerage structure','whiteoak capital brokerage','whiteoak commission structure'],
     '360one':   ['360 one brokerage structure','360 one asset management brokerage',
                  '360 one commission structure','360one brokerage'],
@@ -581,24 +581,29 @@ def parse_bandhan(data: bytes, pwd: str = '') -> dict:
 
 
 def parse_boi(data: bytes, pwd: str = '') -> dict:
+    """BOI – IN-GST ('inclusive of statutory levies and taxes') → EX-GST after /1.18."""
     txt = read_pdf(data, pwd)
     result = {}
     lines = txt.split('\n')
+    # Merge only when there are NO numbers at all (integer or decimal) on the line
     merged, i = [], 0
     while i < len(lines):
         line = lines[i].strip()
-        if line.startswith('Bank of India') and not get_floats(line) and i + 1 < len(lines):
+        if (line.startswith('Bank of India')
+                and not get_all_nums(line)
+                and i + 1 < len(lines)):
             merged.append(line + ' ' + lines[i+1].strip()); i += 2
         else:
             merged.append(line); i += 1
     for line in merged:
         line = re.sub(r'Click\s*[Hh]ere', '', line).strip()
         if not line.startswith('Bank of India'): continue
-        # Use get_all_nums so integer T4+ values (e.g. "1 Click here" → "1") are captured
         nums = [n for n in get_all_nums(line) if 0.01 <= n <= 5.0]
-        if len(nums) >= 2:
+        if len(nums) >= 1:
             name = re.sub(r'[\d.%\s]+$', '', line).strip()
-            result[name] = (nums[0], nums[0], nums[0], nums[1])
+            v = round(nums[0] / 1.18, 4)
+            t2 = round(nums[1] / 1.18, 4) if len(nums) >= 2 else v
+            result[name] = (v, v, v, t2)
     return result
 
 
@@ -828,21 +833,29 @@ def parse_mirae(data: bytes, pwd: str = '') -> dict:
 
 
 def parse_motilal(data: bytes, pwd: str = '') -> dict:
+    """Motilal Oswal – IN-GST ('inclusive of applicable GST') → EX-GST after /1.18.
+    Format: 'Motilal Oswal Scheme Name  T1 T2 T3 T4+ Cumulative' (BPS)
+    Fund names may embed numbers (Nifty 150, Nifty 500) → always use last 5 values.
+    """
     txt = read_pdf(data, pwd)
     result = {}
     for line in txt.split('\n'):
         line = line.strip()
         if not line.startswith('Motilal'): continue
         nums = get_all_nums(line)
-        if len(nums) >= 6:
+        if len(nums) >= 5:
             name = re.sub(r'[\d.\s]+$', '', line).strip()
-            # Index fund names embed numbers (e.g. "Nifty 150", "Nifty 500").
-            # Trail BPS always occupy the last 9 positions: [T1_EX, T1_GST, T1_IN] × 2 + [3yr_cum × 3].
-            t = nums[-9:] if len(nums) >= 9 else nums
-            result[name] = (round(t[0]/100,4),)*3 + (round(t[3]/100,4),)
-        elif len(nums) == 2:
+            if not name or len(name) < 5: continue
+            t = nums[-5:]   # last 5 = [T1, T2, T3, T4+, cumulative]
+            t1 = round((t[0] / 100) / 1.18, 4)
+            t4 = round((t[3] / 100) / 1.18, 4)
+            result[name] = (t1, t1, t1, t4)
+        elif len(nums) >= 2:
             name = re.sub(r'[\d.\s]+$', '', line).strip()
-            result[name] = (round(nums[0]/100,4),)*3 + (round(nums[1]/100,4),)
+            if not name or len(name) < 5: continue
+            t1 = round((nums[-2] / 100) / 1.18, 4)
+            t4 = round((nums[-1] / 100) / 1.18, 4)
+            result[name] = (t1, t1, t1, t4)
     return result
 
 
@@ -897,6 +910,13 @@ def parse_pgim(data: bytes, pwd: str = '') -> dict:
 
 
 def parse_sbi(data: bytes, pwd: str = '') -> dict:
+    """SBI – supports both PDF and Excel (.xlsx) source files.
+    Excel layout: col2=Category, col3=SchemeCode, col4=SchemeName,
+                  col5=1stYear, col6=2nd&3rdYear, col7=3YrPricing, col8=4thYearOnwards
+    Values in Excel are already in % (e.g. 0.67 means 0.67%).
+    """
+    if data[:2] == b'PK':
+        return _parse_sbi_xl(data)
     txt = read_pdf(data, pwd)
     result = {}
     for line in txt.split('\n'):
@@ -911,6 +931,23 @@ def parse_sbi(data: bytes, pwd: str = '') -> dict:
             name = re.sub(r'\s+\d+\.?\d*\s*(?:%|years?|yrs?|months?|days?).*$', '', name, flags=re.I).strip()
             if not name or not name.startswith('SBI'): continue
             result[name] = (nums[0], nums[1])
+    return result
+
+def _parse_sbi_xl(data: bytes) -> dict:
+    wb = read_excel_wb(data)
+    ws = wb.active
+    result = {}
+    def cv(x): return round(float(x), 4) if isinstance(x, (int, float)) else None
+    for row in range(1, ws.max_row + 1):
+        name = ws.cell(row, 4).value  # Scheme Name in col 4
+        t1   = ws.cell(row, 5).value  # 1st Year Trail
+        t2   = ws.cell(row, 6).value  # 2nd & 3rd Year Trail
+        t4   = ws.cell(row, 8).value  # 4th Year Onwards
+        if not isinstance(name, str): continue
+        name = name.strip()
+        if not name.startswith('SBI'): continue
+        if not isinstance(t1, (int, float)): continue
+        result[name] = (cv(t1), cv(t2), cv(t2), cv(t4))
     return result
 
 
@@ -949,35 +986,52 @@ def parse_tata(data: bytes, pwd: str = '') -> dict:
 
 
 def parse_trust(data: bytes, pwd: str = '') -> dict:
+    """TRUSTMF – IN-GST ('commission rates are inclusive of GST') → EX-GST after /1.18.
+    Format A (recent): each line starts with 'TRUSTMF ...'
+    Format B (Q1): 'Category  TRUSTMF Scheme Name  rate  rate'
+    """
     txt = read_pdf(data, pwd)
     result = {}
     for line in txt.split('\n'):
-        line = line.strip()
-        if not line.upper().startswith('TRUST'): continue
-        nums = get_floats(line)
+        line = re.sub(r'\s+', ' ', line.strip())
+        # Find TRUSTMF anywhere in the line
+        idx = line.upper().find('TRUSTMF')
+        if idx < 0: continue
+        part = line[idx:]
+        nums = get_floats(part)
         if len(nums) >= 1:
-            name = re.sub(r'[\d.%\s]+$', '', line).strip()
-            if not name: continue
-            result[name] = (nums[0],)
+            name = re.sub(r'[\d.%\s]+$', '', part).strip()
+            if not name or len(name) < 5: continue
+            v = round(nums[0] / 1.18, 4)
+            result[name] = (v, v, v, v)
     return result
 
 
 def parse_icici(data: bytes, pwd: str = '') -> dict:
-    """ICICI source is an Excel file; values are decimal fractions (×100 → %)."""
+    """ICICI source is an Excel file.
+    Layout: col1=SchemeName, col2=T1, col3=T2, col4=T3, col5=T4+
+    Values are decimal fractions (0.0091 = 0.91%) → multiply by 100.
+    NFO PDFs may also be passed — return empty dict for those.
+    """
+    if data[:2] != b'PK':   # Not a zip/xlsx → skip PDFs gracefully
+        return {}
     wb = read_excel_wb(data)
     ws = wb.active
     result = {}
-    for row in range(4, ws.max_row + 1):
-        name = ws.cell(row, 2).value
-        t1   = ws.cell(row, 3).value
-        t2   = ws.cell(row, 4).value
-        t3   = ws.cell(row, 5).value
-        t4   = ws.cell(row, 6).value
-        if not name or not isinstance(t1, (int, float)): continue
-        vals = tuple(round(float(x) * 100, 4) for x in (t1, t2, t3, t4))
-        key  = str(name).strip()
-        result[key] = vals
-        ku = key.upper()
+    def cv(x): return round(float(x) * 100, 4) if isinstance(x, (int, float)) else None
+    for row in range(1, ws.max_row + 1):
+        name = ws.cell(row, 1).value
+        t1   = ws.cell(row, 2).value
+        t2   = ws.cell(row, 3).value
+        t3   = ws.cell(row, 4).value
+        t4   = ws.cell(row, 5).value
+        if not isinstance(name, str): continue
+        name = name.strip()
+        if not name.startswith('ICICI'): continue
+        if not isinstance(t1, (int, float)): continue
+        vals = (cv(t1), cv(t2), cv(t3), cv(t4))
+        result[name] = vals
+        ku = name.upper()
         if 'REGULAR GOLD SAVINGS' in ku:
             result['ICICI Prudential Gold ETF FOF'] = vals
             result['ICICI Prudential Gold ETF'] = vals
@@ -994,10 +1048,20 @@ _BAJAJ_TYPES = sorted([
 ], key=len, reverse=True)
 
 def parse_bajaj(data: bytes, pwd: str = '') -> dict:
-    """Bajaj Finserv – IN-GST rates. Format: 'Bajaj Finserv X Fund [Cat] [ExitPeriod] T% T% T% Total%'"""
+    """Bajaj Finserv – IN-GST rates. Format: 'Bajaj Finserv X Fund [Cat] [ExitPeriod] T% T% T% Total%'
+    Some PDF layouts split the scheme name across two lines; merge those before parsing.
+    """
     txt = read_pdf(data, pwd)
     result = {}
-    for line in txt.split('\n'):
+    lines = txt.split('\n')
+    merged, i = [], 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith('Bajaj Finserv') and not get_floats(line) and i + 1 < len(lines):
+            merged.append(line + ' ' + lines[i+1].strip()); i += 2
+        else:
+            merged.append(line); i += 1
+    for line in merged:
         line = line.strip()
         if not line.startswith('Bajaj Finserv'): continue
         nums = get_floats(line)
