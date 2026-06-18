@@ -148,26 +148,62 @@ def best_match(name, data):
 # ── Excel filler ──────────────────────────────────────────────────────────────
 
 def fill_workbook(wb, data: dict):
-    """Fill trail columns in-place. Returns (filled_names, not_found_names)."""
+    """Fill trail columns in-place. Returns (filled_names, not_found_names).
+
+    Handles two header layouts:
+    • Standard (REDOS): row 1 = headers, row 2+ = data
+    • Company-header: row 1 = company/ARN identifier, row 2 = column headers, row 3+ = data
+    """
     ws = wb.active
-    hdr = {ws.cell(1, c).value: c for c in range(1, ws.max_column + 1)}
-    sc = hdr.get('SchemeName', 4)
-    trail_order = [
-        'Trail1stYear','T1','Trail2ndYear','T2','Trail3rdYear','T3',
-        'Trail3rdYearOnwards','Trail4thYearOnwards','T4+',
-        'Trail1stYearOnwards','Trail2ndYearOnwards',
-    ]
-    trail_cols = [(n, hdr[n]) for n in trail_order if n in hdr]
+    max_col = ws.max_column or 1
+
+    # Aliases for header names → (trail_index 0-3, canonical label)
+    # trail_index: 0=T1, 1=T2, 2=T3, 3=T4+
+    _TRAIL_ALIASES = {
+        'Trail1stYear': 0,        'T1': 0,
+        '1st Year Trail': 0,      '1st Year Trail ': 0,
+        'Trail1stYearOnwards': 0,
+        'Trail2ndYear': 1,        'T2': 1,
+        '2nd Year Trail': 1,      '2nd & 3rd Year Trail': 1,
+        'Trail2ndYearOnwards': 1,
+        'Trail3rdYear': 2,        'T3': 2,
+        'Trail3rdYearOnwards': 2,
+        'Trail4thYearOnwards': 3, 'T4+': 3,
+        '4th Year Onwards': 3,
+    }
+    _SCHEME_ALIASES = {'SchemeName', 'Scheme Name', 'SCHEME NAME',
+                       'SchemeNname', 'scheme name'}
+
+    def _read_hdr(r):
+        return {ws.cell(r, c).value: c for c in range(1, max_col + 1) if ws.cell(r, c).value is not None}
+
+    # Detect header row: prefer whichever of rows 1/2 contains a trail or scheme column
+    hdr, hdr_row = _read_hdr(1), 1
+    if not (set(hdr) & set(_TRAIL_ALIASES)) and not (set(hdr) & _SCHEME_ALIASES):
+        hdr2 = _read_hdr(2)
+        if (set(hdr2) & set(_TRAIL_ALIASES)) or (set(hdr2) & _SCHEME_ALIASES):
+            hdr, hdr_row = hdr2, 2
+
+    # Scheme name column: look for any known alias, then default to col 4
+    sc = next((hdr[k] for k in _SCHEME_ALIASES if k in hdr), hdr.get('SchemeName', 4))
+
+    # Trail columns: (trail_index, col_number) sorted by trail_index
+    trail_cols = sorted(
+        {(idx, hdr[k]) for k, idx in _TRAIL_ALIASES.items() if k in hdr},
+        key=lambda x: x[0],
+    )
+
     filled, not_found = [], []
-    for row in range(2, ws.max_row + 1):
+    for row in range(hdr_row + 1, ws.max_row + 1):
         scheme = ws.cell(row, sc).value
-        if not scheme: continue
+        if not scheme:
+            continue
         match = best_match(str(scheme), data)
         if match is not None:
             vals = match if isinstance(match, tuple) else (match,) * 4
-            for i, (_, col_idx) in enumerate(trail_cols):
-                if i < len(vals) and vals[i] is not None:
-                    ws.cell(row, col_idx).value = round(float(vals[i]), 4)
+            for trail_idx, col_idx in trail_cols:
+                if trail_idx < len(vals) and vals[trail_idx] is not None:
+                    ws.cell(row, col_idx).value = round(float(vals[trail_idx]), 4)
             filled.append(str(scheme))
         else:
             not_found.append(str(scheme))
@@ -190,8 +226,8 @@ def detect_format(wb) -> str:
     for c in range(1, min((ws.max_column or 0) + 1, 25)):
         v = ws.cell(1, c).value
         if v:
-            headers.add(str(v))
-    return 'vijay' if ('BrokerageName' in headers or 'T15' in headers) else 'redos'
+            headers.add(str(v).lower())
+    return 'vijay' if ('brokeragename' in headers or 't15' in headers) else 'redos'
 
 def fill_workbook_vijay(wb, data: dict):
     """Fill vijayinfotech row-based xlsx in-place.
@@ -199,16 +235,21 @@ def fill_workbook_vijay(wb, data: dict):
     Returns (filled_scheme_list, blank_scheme_list).
     """
     ws = wb.active
-    hdr = {}
+    hdr = {}       # exact case → col index
+    hdr_lo = {}    # lowercase → col index (case-insensitive fallback)
     for c in range(1, (ws.max_column or 0) + 1):
         v = ws.cell(1, c).value
         if v:
             hdr[str(v)] = c
+            hdr_lo[str(v).lower()] = c
 
-    sc = hdr.get('Schemename', 6)       # scheme name
-    jc = hdr.get('BrokerageName', 10)   # e.g. "FIRST YEAR TRAIL"
-    nc = hdr.get('T15', 14)             # column to fill
-    oc = hdr.get('B15', 15)             # column to fill
+    def _col(exact, lower_key, default):
+        return hdr.get(exact) or hdr_lo.get(lower_key, default)
+
+    sc = _col('Schemename',    'schemename',    6)   # scheme name
+    jc = _col('BrokerageName', 'brokeragename', 10)  # e.g. "FIRST YEAR TRAIL"
+    nc = _col('T15',           't15',           14)  # column to fill
+    oc = _col('B15',           'b15',           15)  # column to fill
 
     # Pass 1 (read-only, fast): collect rows needing updates & build match cache
     cache = {}
@@ -373,9 +414,19 @@ def detect_source_amc(filename: str, preview: str = '') -> str | None:
 
 def detect_target_amc(wb) -> str | None:
     ws = wb.active
-    hdr = {ws.cell(1, c).value: c for c in range(1, ws.max_column + 1)}
-    sc = hdr.get('SchemeName', 4)
-    for row in range(2, min(6, ws.max_row + 1)):
+    max_col = ws.max_column or 1
+    # Build a case-insensitive header map from rows 1 and 2
+    hdr = {}
+    for r in (1, 2):
+        for c in range(1, max_col + 1):
+            v = ws.cell(r, c).value
+            if v:
+                hdr[str(v)] = c
+    # Find scheme name column; check several aliases
+    sc = (hdr.get('SchemeName') or hdr.get('Scheme Name')
+          or hdr.get('SCHEME NAME') or 4)
+    # Check rows 2-7 to handle templates with company header in row 1
+    for row in range(2, min(8, ws.max_row + 1)):
         scheme = str(ws.cell(row, sc).value or '').lower()
         for amc, prefixes in _TARGET_PREFIXES.items():
             if any(scheme.startswith(p) for p in prefixes):
@@ -1010,7 +1061,8 @@ def parse_trust(data: bytes, pwd: str = '') -> dict:
 
 def parse_icici(data: bytes, pwd: str = '') -> dict:
     """ICICI source is an Excel file.
-    Layout: col1=SchemeName, col2=T1, col3=T2, col4=T3, col5=T4+
+    Pre-Q4 2025-26 layout: col1=SchemeName, col2=T1, col3=T2, col4=T3, col5=T4+
+    Q4 2025-26 onwards:    col1=SchemeName, col2=T1, col3=T2, col4=T3, col5=T4yr, col6=T5yr+(T4+)
     Values are decimal fractions (0.0091 = 0.91%) → multiply by 100.
     NFO PDFs may also be passed — return empty dict for those.
     """
@@ -1020,12 +1072,22 @@ def parse_icici(data: bytes, pwd: str = '') -> dict:
     ws = wb.active
     result = {}
     def cv(x): return round(float(x) * 100, 4) if isinstance(x, (int, float)) else None
+
+    # Detect if this file has 5 trail columns (col6 = "5th yr onwards" = true T4+)
+    # Look for a header row containing 'onwards' in col6
+    has_col6 = False
+    for r in range(1, min(5, ws.max_row + 1)):
+        v6 = ws.cell(r, 6).value
+        if isinstance(v6, str) and 'onwards' in v6.lower():
+            has_col6 = True
+            break
+
     for row in range(1, ws.max_row + 1):
         name = ws.cell(row, 1).value
         t1   = ws.cell(row, 2).value
         t2   = ws.cell(row, 3).value
         t3   = ws.cell(row, 4).value
-        t4   = ws.cell(row, 5).value
+        t4   = ws.cell(row, 6).value if has_col6 else ws.cell(row, 5).value
         if not isinstance(name, str): continue
         name = name.strip()
         if not name.startswith('ICICI'): continue
